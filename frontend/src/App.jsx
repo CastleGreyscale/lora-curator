@@ -647,6 +647,7 @@ export default function App() {
     save_every_n_epochs: 2, resolution: 1024,
     enable_samples: false, sample_prompts: [],
     source_type: "selection", source_path: "",
+    dit_model: "qwen_image_bf16.safetensors",
   });
   const [pipelineLog, setPipelineLog] = useState([]);
   const pipelineInterval = useRef(null);
@@ -994,6 +995,14 @@ export default function App() {
                         </button>
                       ))}
                     </div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Model</label>
+                    <select value={pipelineForm.dit_model} onChange={e => setPipelineForm(p => ({ ...p, dit_model: e.target.value }))}
+                      style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 12, fontFamily: "'Space Mono', monospace", boxSizing: "border-box" }}>
+                      <option value="qwen_image_bf16.safetensors">Qwen-Image</option>
+                      <option value="qwen_image_2512_bf16.safetensors">Qwen-Image-2512</option>
+                    </select>
                   </div>
                   <div>
                     <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Project Name *</label>

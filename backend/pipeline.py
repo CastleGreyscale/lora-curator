@@ -141,6 +141,7 @@ def create_project(
     resolution: int = 1024,
     enable_samples: bool = False,
     sample_prompts: list = None,
+    dit_model: str = "qwen_image_bf16.safetensors",
 ) -> dict:
     """Create project dir, copy selected images, write project.toml."""
     global _stop_flag
@@ -216,7 +217,7 @@ def create_project(
     _write_project_toml(
         project_dir, name, description, trigger_word, tagging_prompt, tagging_model,
         learning_rate, network_dim, network_alpha, max_epochs, save_every_n_epochs, resolution,
-        enable_samples, sample_prompts or [],
+        enable_samples, sample_prompts or [], dit_model=dit_model,
     )
 
     # Save selection manifest
@@ -246,6 +247,7 @@ def create_project_from_path(
     resolution: int = 1024,
     enable_samples: bool = False,
     sample_prompts: list = None,
+    dit_model: str = "qwen_image_bf16.safetensors",
 ) -> dict:
     """Create project from an existing directory of images (bypasses Browse selection)."""
     global _stop_flag
@@ -320,7 +322,7 @@ def create_project_from_path(
     _write_project_toml(
         project_dir, name, description, trigger_word, tagging_prompt, tagging_model,
         learning_rate, network_dim, network_alpha, max_epochs, save_every_n_epochs, resolution,
-        enable_samples, sample_prompts or [],
+        enable_samples, sample_prompts or [], dit_model=dit_model,
     )
 
     manifest = {
@@ -349,7 +351,7 @@ def create_project_from_path(
 
 def _write_project_toml(project_dir, name, description, trigger_word, tagging_prompt,
                          tagging_model, lr, rank, network_alpha, epochs, save_every, resolution,
-                         enable_samples, sample_prompts):
+                         enable_samples, sample_prompts, dit_model="qwen_image_bf16.safetensors"):
     """Generate project.toml with user settings + sensible defaults."""
 
     models_root = str(get_models_root()) or "${COMFYUI_MODELS_ROOT}"
@@ -405,7 +407,7 @@ def _write_project_toml(project_dir, name, description, trigger_word, tagging_pr
         "discrete_flow_shift = 2.2",
         "",
         "[training.models]",
-        'dit_model = "qwen_image_bf16.safetensors"',
+        f'dit_model = "{dit_model}"',
         'vae_model = "diffusion_pytorch_model.safetensors"',
         'text_encoder = "qwen_2.5_vl_7b.safetensors"',
         "",

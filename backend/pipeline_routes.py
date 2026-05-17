@@ -27,6 +27,7 @@ class CreateProjectRequest(BaseModel):
     resolution: int = 1024
     enable_samples: bool = False
     sample_prompts: List[str] = []
+    dit_model: str = "qwen_image_bf16.safetensors"
 
 
 class CreateFromPathRequest(BaseModel):
@@ -44,6 +45,7 @@ class CreateFromPathRequest(BaseModel):
     resolution: int = 1024
     enable_samples: bool = False
     sample_prompts: List[str] = []
+    dit_model: str = "qwen_image_bf16.safetensors"
 
 
 class LoadProjectRequest(BaseModel):
@@ -70,6 +72,7 @@ async def create_project(req: CreateProjectRequest):
         resolution=req.resolution,
         enable_samples=req.enable_samples,
         sample_prompts=req.sample_prompts,
+        dit_model=req.dit_model,
     )
     if "error" in result:
         raise HTTPException(400, result["error"])
@@ -97,6 +100,7 @@ async def create_project_from_path(req: CreateFromPathRequest):
         resolution=req.resolution,
         enable_samples=req.enable_samples,
         sample_prompts=req.sample_prompts,
+        dit_model=req.dit_model,
     )
     if "error" in result:
         raise HTTPException(400, result["error"])
