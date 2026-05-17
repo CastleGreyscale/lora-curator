@@ -907,6 +907,48 @@ def start_training(project_dir: str):
 
 
 # ──────────────────────────────────────────────
+# Project config read/write
+# ──────────────────────────────────────────────
+
+def read_project_config(project_dir) -> dict:
+    """Read project.toml and return form-friendly dict."""
+    config = _read_toml(Path(project_dir) / "project.toml")
+    tagging = config.get("tagging", {})
+    training = config.get("training", {})
+    models = training.get("models", {})
+    advanced = training.get("advanced", {})
+    dataset = config.get("dataset", {})
+    return {
+        "name": config.get("project", {}).get("name", ""),
+        "description": config.get("project", {}).get("description", ""),
+        "trigger_word": tagging.get("trigger_word", ""),
+        "tagging_prompt": tagging.get("prompt", ""),
+        "tagging_model": tagging.get("model", "qwen2.5vl:32b"),
+        "learning_rate": str(training.get("learning_rate", "5e-5")),
+        "network_dim": int(training.get("network_dim", 32)),
+        "network_alpha": int(training.get("network_alpha", 16)),
+        "max_epochs": int(training.get("max_epochs", 16)),
+        "save_every_n_epochs": int(training.get("save_every_n_epochs", 2)),
+        "resolution": int(dataset.get("resolution", 1024)),
+        "dit_model": models.get("dit_model", "qwen_image_bf16.safetensors"),
+        "enable_samples": bool(advanced.get("enable_sample_prompts", False)),
+        "sample_prompts": advanced.get("sample_prompts", []),
+    }
+
+
+def update_project_config(project_dir, name, description, trigger_word, tagging_prompt,
+                           tagging_model, learning_rate, network_dim, network_alpha,
+                           max_epochs, save_every_n_epochs, resolution, enable_samples,
+                           sample_prompts, dit_model):
+    """Rewrite project.toml with updated params, preserving structure."""
+    _write_project_toml(
+        Path(project_dir), name, description, trigger_word, tagging_prompt, tagging_model,
+        learning_rate, network_dim, network_alpha, max_epochs, save_every_n_epochs, resolution,
+        enable_samples, sample_prompts or [], dit_model=dit_model,
+    )
+
+
+# ──────────────────────────────────────────────
 # Project listing
 # ──────────────────────────────────────────────
 

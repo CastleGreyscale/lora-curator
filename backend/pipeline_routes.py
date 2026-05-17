@@ -196,6 +196,39 @@ async def stop_current():
     return {"stopped": stopped}
 
 
+@router.get("/project-config")
+async def get_project_config():
+    """Return current project's config as form-friendly dict."""
+    if not pipeline.status["project_dir"]:
+        raise HTTPException(400, "No project loaded")
+    return pipeline.read_project_config(pipeline.status["project_dir"])
+
+
+@router.post("/project-config")
+async def save_project_config(req: CreateProjectRequest):
+    """Rewrite project.toml with updated params."""
+    if not pipeline.status["project_dir"]:
+        raise HTTPException(400, "No project loaded")
+    pipeline.update_project_config(
+        pipeline.status["project_dir"],
+        name=req.name,
+        description=req.description,
+        trigger_word=req.trigger_word,
+        tagging_prompt=req.tagging_prompt,
+        tagging_model=req.tagging_model,
+        learning_rate=req.learning_rate,
+        network_dim=req.network_dim,
+        network_alpha=req.network_alpha,
+        max_epochs=req.max_epochs,
+        save_every_n_epochs=req.save_every_n_epochs,
+        resolution=req.resolution,
+        enable_samples=req.enable_samples,
+        sample_prompts=req.sample_prompts,
+        dit_model=req.dit_model,
+    )
+    return {"ok": True}
+
+
 @router.get("/projects")
 async def list_projects():
     """List existing projects."""

@@ -650,6 +650,8 @@ export default function App() {
     dit_model: "qwen_image_bf16.safetensors",
   });
   const [pipelineLog, setPipelineLog] = useState([]);
+  const [editMode, setEditMode] = useState(false);
+  const [configSaved, setConfigSaved] = useState(false);
   const pipelineInterval = useRef(null);
 
   useEffect(() => { fetchStats(); fetchFilterOptions(); fetchSelectionSummary(); fetchBrowseMovies(1); }, []);
@@ -748,7 +750,28 @@ export default function App() {
     try {
       const r = await fetch(`${API}/pipeline/load`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project_dir: dir }) });
       if (!r.ok) { let msg = "Error"; try { msg = (await r.json()).detail; } catch {} alert(msg); return; }
+      const cr = await fetch(`${API}/pipeline/project-config`);
+      if (cr.ok) {
+        const cfg = await cr.json();
+        setPipelineForm(p => ({ ...p, ...cfg }));
+      }
+      setEditMode(true);
+      setConfigSaved(false);
       fetchPipelineStatus();
+    } catch (e) { alert("Error: " + e.message); }
+  };
+  const saveProjectConfig = async () => {
+    try {
+      const r = await fetch(`${API}/pipeline/project-config`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pipelineForm),
+      });
+      if (!r.ok) {
+        let msg = `Error ${r.status}`;
+        try { const e = await r.json(); msg = e.detail || msg; } catch {}
+        alert(msg); return;
+      }
+      setConfigSaved(true);
+      setTimeout(() => setConfigSaved(false), 2000);
     } catch (e) { alert("Error: " + e.message); }
   };
   const runPipelineStep = async (step) => {
@@ -950,10 +973,10 @@ export default function App() {
           <div style={{ display: "grid", gridTemplateColumns: pipelineStatus?.project_name ? "360px 1fr" : "1fr", gap: 24 }}>
             {/* Left: Setup / Projects */}
             <div>
-              {/* Create New Project */}
-              <Section title="New Project">
+              {/* Create New Project / Edit Config */}
+              <Section title={editMode ? `Edit Config` : "New Project"}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <div>
+                  {!editMode && (<div>
                     <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Source</label>
                     <div style={{ display: "flex", borderRadius: 8, border: `1px solid ${theme.border}`, overflow: "hidden" }}>
                       {[{ value: "selection", label: "From Browse Selection" }, { value: "external_path", label: "From External Path" }].map(opt => (
@@ -969,8 +992,8 @@ export default function App() {
                         </button>
                       ))}
                     </div>
-                  </div>
-                  {pipelineForm.source_type === "external_path" && (
+                  </div>)}
+                  {!editMode && pipelineForm.source_type === "external_path" && (
                     <div>
                       <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Dataset Path</label>
                       <input value={pipelineForm.source_path} onChange={e => setPipelineForm(p => ({ ...p, source_path: e.target.value }))}
@@ -1005,9 +1028,10 @@ export default function App() {
                     </select>
                   </div>
                   <div>
-                    <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Project Name *</label>
-                    <input value={pipelineForm.name} onChange={e => setPipelineForm(p => ({ ...p, name: e.target.value.replace(/[^a-zA-Z0-9_-]/g, "_") }))}
-                      placeholder="noir_style" style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 13, fontFamily: "'Space Mono', monospace", boxSizing: "border-box" }} />
+                    <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Project Name {editMode ? "" : "*"}</label>
+                    <input value={pipelineForm.name} onChange={e => !editMode && setPipelineForm(p => ({ ...p, name: e.target.value.replace(/[^a-zA-Z0-9_-]/g, "_") }))}
+                      readOnly={editMode} placeholder="noir_style"
+                      style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${theme.border}`, background: editMode ? theme.surfaceAlt : theme.bg, color: editMode ? theme.textDim : theme.text, fontSize: 13, fontFamily: "'Space Mono', monospace", boxSizing: "border-box", cursor: editMode ? "default" : "text" }} />
                   </div>
                   <div>
                     <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Trigger Word</label>
@@ -1055,19 +1079,40 @@ export default function App() {
                         style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 12, fontFamily: "'Space Mono', monospace", boxSizing: "border-box" }} />
                     </div>
                   </div>
-                  <button onClick={createProject}
-                    disabled={!pipelineForm.name || pipelineStatus?.running || (pipelineForm.source_type === "external_path" && !pipelineForm.source_path.trim())}
-                    style={{
-                      padding: "10px 20px", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 600,
-                      cursor: (!pipelineForm.name || (pipelineForm.source_type === "external_path" && !pipelineForm.source_path.trim())) ? "default" : "pointer",
-                      background: (pipelineForm.name && (pipelineForm.source_type === "selection" || pipelineForm.source_path.trim())) ? `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})` : theme.surfaceAlt,
-                      color: (pipelineForm.name && (pipelineForm.source_type === "selection" || pipelineForm.source_path.trim())) ? "#fff" : theme.textDim,
-                      fontFamily: "'DM Sans', sans-serif",
-                    }}>
-                    {pipelineForm.source_type === "external_path"
-                      ? "Create Project from Path"
-                      : (selectionSummary ? `Create Project (${selectionSummary.total_images.toLocaleString()} images)` : "Create Project")}
-                  </button>
+                  {editMode ? (
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={saveProjectConfig} disabled={pipelineStatus?.running}
+                        style={{
+                          flex: 1, padding: "10px 20px", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 600,
+                          cursor: pipelineStatus?.running ? "default" : "pointer",
+                          background: configSaved ? theme.success || "#22c55e" : `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})`,
+                          color: "#fff", fontFamily: "'DM Sans', sans-serif", transition: "background 0.2s",
+                        }}>
+                        {configSaved ? "Saved!" : "Save Config"}
+                      </button>
+                      <button onClick={() => { setEditMode(false); setPipelineForm(p => ({ ...p, name: "", description: "", trigger_word: "", source_type: "selection", source_path: "" })); }}
+                        style={{
+                          padding: "10px 14px", borderRadius: 8, border: `1px solid ${theme.border}`, background: "transparent",
+                          color: theme.textMuted, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                        }}>
+                        New
+                      </button>
+                    </div>
+                  ) : (
+                    <button onClick={createProject}
+                      disabled={!pipelineForm.name || pipelineStatus?.running || (pipelineForm.source_type === "external_path" && !pipelineForm.source_path.trim())}
+                      style={{
+                        padding: "10px 20px", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 600,
+                        cursor: (!pipelineForm.name || (pipelineForm.source_type === "external_path" && !pipelineForm.source_path.trim())) ? "default" : "pointer",
+                        background: (pipelineForm.name && (pipelineForm.source_type === "selection" || pipelineForm.source_path.trim())) ? `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})` : theme.surfaceAlt,
+                        color: (pipelineForm.name && (pipelineForm.source_type === "selection" || pipelineForm.source_path.trim())) ? "#fff" : theme.textDim,
+                        fontFamily: "'DM Sans', sans-serif",
+                      }}>
+                      {pipelineForm.source_type === "external_path"
+                        ? "Create Project from Path"
+                        : (selectionSummary ? `Create Project (${selectionSummary.total_images.toLocaleString()} images)` : "Create Project")}
+                    </button>
+                  )}
                 </div>
               </Section>
 
