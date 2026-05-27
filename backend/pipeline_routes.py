@@ -24,6 +24,7 @@ class CreateProjectRequest(BaseModel):
     network_alpha: int = 16
     max_epochs: int = 16
     save_every_n_epochs: int = 2
+    num_repeats: int = 1
     resolution: int = 1024
     enable_samples: bool = False
     sample_prompts: List[str] = []
@@ -42,6 +43,7 @@ class CreateFromPathRequest(BaseModel):
     network_alpha: int = 16
     max_epochs: int = 16
     save_every_n_epochs: int = 2
+    num_repeats: int = 1
     resolution: int = 1024
     enable_samples: bool = False
     sample_prompts: List[str] = []
@@ -69,6 +71,7 @@ async def create_project(req: CreateProjectRequest):
         network_alpha=req.network_alpha,
         max_epochs=req.max_epochs,
         save_every_n_epochs=req.save_every_n_epochs,
+        num_repeats=req.num_repeats,
         resolution=req.resolution,
         enable_samples=req.enable_samples,
         sample_prompts=req.sample_prompts,
@@ -97,6 +100,7 @@ async def create_project_from_path(req: CreateFromPathRequest):
         network_alpha=req.network_alpha,
         max_epochs=req.max_epochs,
         save_every_n_epochs=req.save_every_n_epochs,
+        num_repeats=req.num_repeats,
         resolution=req.resolution,
         enable_samples=req.enable_samples,
         sample_prompts=req.sample_prompts,
@@ -221,6 +225,7 @@ async def save_project_config(req: CreateProjectRequest):
         network_alpha=req.network_alpha,
         max_epochs=req.max_epochs,
         save_every_n_epochs=req.save_every_n_epochs,
+        num_repeats=req.num_repeats,
         resolution=req.resolution,
         enable_samples=req.enable_samples,
         sample_prompts=req.sample_prompts,

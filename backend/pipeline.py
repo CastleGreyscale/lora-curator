@@ -138,6 +138,7 @@ def create_project(
     network_alpha: int = 16,
     max_epochs: int = 16,
     save_every_n_epochs: int = 2,
+    num_repeats: int = 1,
     resolution: int = 1024,
     enable_samples: bool = False,
     sample_prompts: list = None,
@@ -216,8 +217,8 @@ def create_project(
     _log("Writing project.toml...")
     _write_project_toml(
         project_dir, name, description, trigger_word, tagging_prompt, tagging_model,
-        learning_rate, network_dim, network_alpha, max_epochs, save_every_n_epochs, resolution,
-        enable_samples, sample_prompts or [], dit_model=dit_model,
+        learning_rate, network_dim, network_alpha, max_epochs, save_every_n_epochs, num_repeats,
+        resolution, enable_samples, sample_prompts or [], dit_model=dit_model,
     )
 
     # Save selection manifest
@@ -244,6 +245,7 @@ def create_project_from_path(
     network_alpha: int = 16,
     max_epochs: int = 16,
     save_every_n_epochs: int = 2,
+    num_repeats: int = 1,
     resolution: int = 1024,
     enable_samples: bool = False,
     sample_prompts: list = None,
@@ -321,8 +323,8 @@ def create_project_from_path(
 
     _write_project_toml(
         project_dir, name, description, trigger_word, tagging_prompt, tagging_model,
-        learning_rate, network_dim, network_alpha, max_epochs, save_every_n_epochs, resolution,
-        enable_samples, sample_prompts or [], dit_model=dit_model,
+        learning_rate, network_dim, network_alpha, max_epochs, save_every_n_epochs, num_repeats,
+        resolution, enable_samples, sample_prompts or [], dit_model=dit_model,
     )
 
     manifest = {
@@ -350,8 +352,8 @@ def create_project_from_path(
 
 
 def _write_project_toml(project_dir, name, description, trigger_word, tagging_prompt,
-                         tagging_model, lr, rank, network_alpha, epochs, save_every, resolution,
-                         enable_samples, sample_prompts, dit_model="qwen_image_bf16.safetensors"):
+                         tagging_model, lr, rank, network_alpha, epochs, save_every, num_repeats,
+                         resolution, enable_samples, sample_prompts, dit_model="qwen_image_bf16.safetensors"):
     """Generate project.toml with user settings + sensible defaults."""
 
     models_root = str(get_models_root()) or "${COMFYUI_MODELS_ROOT}"
@@ -441,7 +443,7 @@ def _write_project_toml(project_dir, name, description, trigger_word, tagging_pr
         "caption_dropout_rate = 0.0",
         f"resolution = {resolution}",
         "batch_size = 1",
-        "num_repeats = 1",
+        f"num_repeats = {num_repeats}",
         "enable_bucket = true",
         "bucket_no_upscale = true",
     ]
@@ -449,7 +451,7 @@ def _write_project_toml(project_dir, name, description, trigger_word, tagging_pr
     (project_dir / "project.toml").write_text("\n".join(lines) + "\n")
 
 
-def _write_dataset_toml(project_dir, name, resolution=1024):
+def _write_dataset_toml(project_dir, name, resolution=1024, num_repeats=1):
     """Write the musubi-tuner dataset config TOML."""
     dataset_dir = project_dir / "dataset"
     cache_dir = project_dir / "cache_directory"
@@ -465,7 +467,7 @@ image_directory = "{dataset_dir}"
 cache_directory = "{cache_dir}"
 resolution = {resolution}
 batch_size = 1
-num_repeats = 1
+num_repeats = {num_repeats}
 '''
     config_path.write_text(content)
     return config_path
@@ -620,7 +622,8 @@ def start_cache(project_dir: str, cache_type: str = "both"):
 
     # Write dataset config for musubi-tuner
     dataset_config = _write_dataset_toml(project_dir, name,
-        config.get("dataset", {}).get("resolution", 1024))
+        config.get("dataset", {}).get("resolution", 1024),
+        config.get("dataset", {}).get("num_repeats", 1))
 
     models = config.get("training", {}).get("models", {})
     vae_path = models_root / "vae" / models.get("vae_model", "diffusion_pytorch_model.safetensors")
@@ -718,7 +721,8 @@ def start_training(project_dir: str):
 
     # Write dataset config
     resolution = config.get("dataset", {}).get("resolution", 1024)
-    dataset_config = _write_dataset_toml(project_dir, name, resolution)
+    num_repeats = config.get("dataset", {}).get("num_repeats", 1)
+    dataset_config = _write_dataset_toml(project_dir, name, resolution, num_repeats)
 
     # Model paths
     dit_path = models_root / "checkpoints" / models_cfg.get("dit_model", "qwen_image_bf16.safetensors")
@@ -929,6 +933,7 @@ def read_project_config(project_dir) -> dict:
         "network_alpha": int(training.get("network_alpha", 16)),
         "max_epochs": int(training.get("max_epochs", 16)),
         "save_every_n_epochs": int(training.get("save_every_n_epochs", 2)),
+        "num_repeats": int(dataset.get("num_repeats", 1)),
         "resolution": int(dataset.get("resolution", 1024)),
         "dit_model": models.get("dit_model", "qwen_image_bf16.safetensors"),
         "enable_samples": bool(advanced.get("enable_sample_prompts", False)),
@@ -938,13 +943,13 @@ def read_project_config(project_dir) -> dict:
 
 def update_project_config(project_dir, name, description, trigger_word, tagging_prompt,
                            tagging_model, learning_rate, network_dim, network_alpha,
-                           max_epochs, save_every_n_epochs, resolution, enable_samples,
-                           sample_prompts, dit_model):
+                           max_epochs, save_every_n_epochs, num_repeats, resolution,
+                           enable_samples, sample_prompts, dit_model):
     """Rewrite project.toml with updated params, preserving structure."""
     _write_project_toml(
         Path(project_dir), name, description, trigger_word, tagging_prompt, tagging_model,
-        learning_rate, network_dim, network_alpha, max_epochs, save_every_n_epochs, resolution,
-        enable_samples, sample_prompts or [], dit_model=dit_model,
+        learning_rate, network_dim, network_alpha, max_epochs, save_every_n_epochs, num_repeats,
+        resolution, enable_samples, sample_prompts or [], dit_model=dit_model,
     )
 
 

@@ -570,6 +570,7 @@ const LORA_PRESETS = {
     network_alpha: 16,
     max_epochs: 12,
     save_every_n_epochs: 2,
+    num_repeats: 1,
   },
   character: {
     label: "Character",
@@ -579,6 +580,7 @@ const LORA_PRESETS = {
     network_alpha: 16,
     max_epochs: 20,
     save_every_n_epochs: 2,
+    num_repeats: 1,
   },
   object: {
     label: "Object",
@@ -588,6 +590,7 @@ const LORA_PRESETS = {
     network_alpha: 8,
     max_epochs: 12,
     save_every_n_epochs: 2,
+    num_repeats: 80,
   },
   environment: {
     label: "Environment",
@@ -597,6 +600,7 @@ const LORA_PRESETS = {
     network_alpha: 16,
     max_epochs: 16,
     save_every_n_epochs: 2,
+    num_repeats: 1,
   },
 };
 
@@ -644,7 +648,7 @@ export default function App() {
     tagging_prompt: "Describe this image in detail for AI training. Include the subject, setting, lighting, mood, color palette, composition, and any notable visual elements.",
     tagging_model: "qwen2.5vl:32b",
     learning_rate: "5e-5", network_dim: 32, network_alpha: 16, max_epochs: 16,
-    save_every_n_epochs: 2, resolution: 1024,
+    save_every_n_epochs: 2, num_repeats: 1, resolution: 1024,
     enable_samples: false, sample_prompts: [],
     source_type: "selection", source_path: "",
     dit_model: "qwen_image_bf16.safetensors",
@@ -1076,6 +1080,11 @@ export default function App() {
                     <div>
                       <label style={{ fontSize: 11, color: theme.textDim, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Save Every</label>
                       <input type="number" value={pipelineForm.save_every_n_epochs} onChange={e => setPipelineForm(p => ({ ...p, save_every_n_epochs: parseInt(e.target.value) || 2 }))}
+                        style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 12, fontFamily: "'Space Mono', monospace", boxSizing: "border-box" }} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, color: theme.textDim, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Repeats</label>
+                      <input type="number" min="1" value={pipelineForm.num_repeats} onChange={e => setPipelineForm(p => ({ ...p, num_repeats: parseInt(e.target.value) || 1 }))}
                         style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 12, fontFamily: "'Space Mono', monospace", boxSizing: "border-box" }} />
                     </div>
                   </div>
