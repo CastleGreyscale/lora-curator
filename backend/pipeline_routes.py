@@ -18,7 +18,7 @@ class CreateProjectRequest(BaseModel):
     description: str = ""
     trigger_word: str = ""
     tagging_prompt: str = "Describe this image in detail for AI training. Include the subject, setting, lighting, mood, color palette, composition, and any notable visual elements."
-    tagging_model: str = "qwen2.5vl:32b"
+    tagging_model: str = "qwen3-vl:8b"
     learning_rate: str = "5e-5"
     network_dim: int = 32
     network_alpha: int = 16
@@ -37,7 +37,7 @@ class CreateFromPathRequest(BaseModel):
     description: str = ""
     trigger_word: str = ""
     tagging_prompt: str = "Describe this image in detail for AI training. Include the subject, setting, lighting, mood, color palette, composition, and any notable visual elements."
-    tagging_model: str = "qwen2.5vl:32b"
+    tagging_model: str = "qwen3-vl:8b"
     learning_rate: str = "5e-5"
     network_dim: int = 32
     network_alpha: int = 16
@@ -160,14 +160,14 @@ async def start_tagging():
 
 
 @router.post("/cache")
-async def start_cache(cache_type: str = "both"):
+async def start_cache(cache_type: str = "both", debug_mode: bool = False):
     """Start VAE and/or text encoder caching."""
     if pipeline.status["running"]:
         raise HTTPException(400, "Pipeline step already running")
     if not pipeline.status["project_dir"]:
         raise HTTPException(400, "No project loaded")
 
-    result = pipeline.start_cache(pipeline.status["project_dir"], cache_type)
+    result = pipeline.start_cache(pipeline.status["project_dir"], cache_type, debug_mode=debug_mode)
     if "error" in result:
         raise HTTPException(400, result["error"])
     return result
@@ -238,6 +238,31 @@ async def save_project_config(req: CreateProjectRequest):
 async def list_projects():
     """List existing projects."""
     return pipeline.list_projects()
+
+
+@router.get("/dataset-images")
+async def list_dataset_images():
+    """List images in the loaded project's dataset folder."""
+    if not pipeline.status["project_dir"]:
+        raise HTTPException(400, "No project loaded")
+    return pipeline.list_dataset_images(pipeline.status["project_dir"])
+
+
+class DeleteDatasetImagesRequest(BaseModel):
+    filenames: List[str]
+
+
+@router.post("/dataset-images/delete")
+async def delete_dataset_images(req: DeleteDatasetImagesRequest):
+    """Delete the given images (and their paired captions) from the dataset."""
+    if not pipeline.status["project_dir"]:
+        raise HTTPException(400, "No project loaded")
+    if pipeline.status["running"]:
+        raise HTTPException(400, "Cannot modify dataset while a pipeline step is running")
+    result = pipeline.delete_dataset_images(pipeline.status["project_dir"], req.filenames)
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
 
 
 @router.get("/env")

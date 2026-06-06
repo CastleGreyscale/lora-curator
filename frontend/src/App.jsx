@@ -565,12 +565,13 @@ const LORA_PRESETS = {
   style: {
     label: "Style",
     tagging_prompt: `Describe this image in 3-4 sentences focusing on the visual style and cinematographic qualities.\n\nThis is a cinematic image from an Italian Horror movie .\n\nEmphasize:\n- Lighting, color palette, and film grain characteristics\n- Composition and framing style\n- Mood and atmosphere\n- Brief subject description\n\nWrite naturally and descriptively`,
-    learning_rate: "1e-5",
+    learning_rate: "3e-5",
     network_dim: 32,
     network_alpha: 16,
     max_epochs: 12,
     save_every_n_epochs: 2,
     num_repeats: 1,
+    resolution: 1024,
   },
   character: {
     label: "Character",
@@ -581,6 +582,7 @@ const LORA_PRESETS = {
     max_epochs: 20,
     save_every_n_epochs: 2,
     num_repeats: 1,
+    resolution: 1328,
   },
   object: {
     label: "Object",
@@ -591,6 +593,7 @@ const LORA_PRESETS = {
     max_epochs: 12,
     save_every_n_epochs: 2,
     num_repeats: 80,
+    resolution: 1328,
   },
   environment: {
     label: "Environment",
@@ -601,6 +604,7 @@ const LORA_PRESETS = {
     max_epochs: 16,
     save_every_n_epochs: 2,
     num_repeats: 1,
+    resolution: 1328,
   },
 };
 
@@ -646,16 +650,22 @@ export default function App() {
   const [pipelineForm, setPipelineForm] = useState({
     name: "", description: "", trigger_word: "",
     tagging_prompt: "Describe this image in detail for AI training. Include the subject, setting, lighting, mood, color palette, composition, and any notable visual elements.",
-    tagging_model: "qwen2.5vl:32b",
+    tagging_model: "qwen3-vl:8b",
     learning_rate: "5e-5", network_dim: 32, network_alpha: 16, max_epochs: 16,
     save_every_n_epochs: 2, num_repeats: 1, resolution: 1024,
     enable_samples: false, sample_prompts: [],
     source_type: "selection", source_path: "",
     dit_model: "qwen_image_bf16.safetensors",
+    cache_debug_mode: false,
   });
   const [pipelineLog, setPipelineLog] = useState([]);
   const [editMode, setEditMode] = useState(false);
   const [configSaved, setConfigSaved] = useState(false);
+  const [selectedPreset, setSelectedPreset] = useState(null);
+  const [datasetImages, setDatasetImages] = useState([]);
+  const [datasetKeep, setDatasetKeep] = useState({});
+  const [datasetLoading, setDatasetLoading] = useState(false);
+  const [reviewCollapsed, setReviewCollapsed] = useState(false);
   const pipelineInterval = useRef(null);
 
   useEffect(() => { fetchStats(); fetchFilterOptions(); fetchSelectionSummary(); fetchBrowseMovies(1); }, []);
@@ -762,6 +772,7 @@ export default function App() {
       setEditMode(true);
       setConfigSaved(false);
       fetchPipelineStatus();
+      fetchDatasetImages();
     } catch (e) { alert("Error: " + e.message); }
   };
   const saveProjectConfig = async () => {
@@ -779,7 +790,8 @@ export default function App() {
     } catch (e) { alert("Error: " + e.message); }
   };
   const runPipelineStep = async (step) => {
-    const endpoints = { tag: "/pipeline/tag", cache: "/pipeline/cache?cache_type=both", train: "/pipeline/train" };
+    const cacheUrl = `/pipeline/cache?cache_type=both${pipelineForm.cache_debug_mode ? "&debug_mode=true" : ""}`;
+    const endpoints = { tag: "/pipeline/tag", cache: cacheUrl, train: "/pipeline/train" };
     try {
       const r = await fetch(`${API}${endpoints[step]}`, { method: "POST" });
       if (!r.ok) { let msg = "Error"; try { msg = (await r.json()).detail; } catch {} alert(msg); return; }
@@ -787,6 +799,35 @@ export default function App() {
     } catch (e) { alert("Error: " + e.message); }
   };
   const stopPipeline = async () => { try { await fetch(`${API}/pipeline/stop`, { method: "POST" }); fetchPipelineStatus(); } catch (e) {} };
+
+  const fetchDatasetImages = async () => {
+    setDatasetLoading(true);
+    try {
+      const r = await fetch(`${API}/pipeline/dataset-images`);
+      if (!r.ok) { setDatasetImages([]); setDatasetKeep({}); return; }
+      const j = await r.json();
+      const imgs = j.images || [];
+      setDatasetImages(imgs);
+      setDatasetKeep(Object.fromEntries(imgs.map(im => [im.filename, true])));
+    } catch (e) { setDatasetImages([]); }
+    finally { setDatasetLoading(false); }
+  };
+  const toggleDatasetKeep = (filename) => {
+    setDatasetKeep(prev => ({ ...prev, [filename]: !prev[filename] }));
+  };
+  const applyDatasetDeletes = async () => {
+    const toDelete = datasetImages.map(im => im.filename).filter(fn => datasetKeep[fn] === false);
+    if (toDelete.length === 0) { alert("Nothing deselected."); return; }
+    if (!confirm(`Delete ${toDelete.length} image(s) (and their captions) from the dataset?`)) return;
+    try {
+      const r = await fetch(`${API}/pipeline/dataset-images/delete`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filenames: toDelete }),
+      });
+      if (!r.ok) { let msg = "Error"; try { msg = (await r.json()).detail; } catch {} alert(msg); return; }
+      await fetchDatasetImages();
+      fetchPipelineStatus();
+    } catch (e) { alert("Error: " + e.message); }
+  };
 
   const activeFilterCount = Object.values(filters).filter(v => v !== undefined && v !== "" && (!Array.isArray(v) || v.length > 0)).length;
 
@@ -1011,16 +1052,22 @@ export default function App() {
                   <div>
                     <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Preset</label>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {Object.entries(LORA_PRESETS).map(([key, preset]) => (
-                        <button key={key} onClick={() => { const { label: _, ...fields } = preset; setPipelineForm(p => ({ ...p, ...fields })); }}
-                          style={{
-                            padding: "5px 12px", borderRadius: 6, border: `1px solid ${theme.accentDim}`,
-                            background: "transparent", color: theme.accent, fontSize: 11, fontWeight: 600,
-                            cursor: "pointer", fontFamily: "'DM Sans', sans-serif", letterSpacing: 0.5,
-                          }}>
-                          {preset.label}
-                        </button>
-                      ))}
+                      {Object.entries(LORA_PRESETS).map(([key, preset]) => {
+                        const active = selectedPreset === key;
+                        return (
+                          <button key={key} onClick={() => { const { label: _, ...fields } = preset; setPipelineForm(p => ({ ...p, ...fields })); setSelectedPreset(key); }}
+                            style={{
+                              padding: "5px 12px", borderRadius: 6,
+                              border: `1px solid ${active ? theme.accent : theme.border}`,
+                              background: active ? `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})` : "transparent",
+                              color: active ? "#fff" : theme.textMuted,
+                              fontSize: 11, fontWeight: 600,
+                              cursor: "pointer", fontFamily: "'DM Sans', sans-serif", letterSpacing: 0.5,
+                            }}>
+                            {preset.label}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                   <div>
@@ -1088,6 +1135,11 @@ export default function App() {
                         style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 12, fontFamily: "'Space Mono', monospace", boxSizing: "border-box" }} />
                     </div>
                   </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12, color: theme.textMuted }}>
+                    <input type="checkbox" checked={pipelineForm.cache_debug_mode}
+                      onChange={e => setPipelineForm(p => ({ ...p, cache_debug_mode: e.target.checked }))} />
+                    <span>VAE cache debug mode <span style={{ color: theme.textDim }}>(adds --debug_mode for bucketing diagnostics)</span></span>
+                  </label>
                   {editMode ? (
                     <div style={{ display: "flex", gap: 8 }}>
                       <button onClick={saveProjectConfig} disabled={pipelineStatus?.running}
@@ -1167,7 +1219,7 @@ export default function App() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
                   {[
                     { key: "export", label: "1. Export Images", desc: "Copy selected images to project", canRun: false },
-                    { key: "tag", label: "2. Tag Images", desc: "Caption with qwen2.5vl:32b via Ollama", canRun: pipelineStatus.steps?.export?.status === "done" },
+                    { key: "tag", label: "2. Tag Images", desc: "Caption with qwen3-vl:8b via Ollama", canRun: pipelineStatus.steps?.export?.status === "done" },
                     { key: "cache_vae", label: "3a. Cache VAE", desc: "Pre-compute VAE latents", canRun: pipelineStatus.steps?.tag?.status === "done", runKey: "cache" },
                     { key: "cache_te", label: "3b. Cache Text Encoder", desc: "Pre-compute text embeddings", canRun: false },
                     { key: "train", label: "4. Train LoRA", desc: "Run training with musubi-tuner", canRun: pipelineStatus.steps?.cache_te?.status === "done" },
@@ -1213,6 +1265,81 @@ export default function App() {
                     );
                   })}
                 </div>
+
+                {/* Dataset Review */}
+                {(() => {
+                  const total = datasetImages.length;
+                  const toRemove = datasetImages.filter(im => datasetKeep[im.filename] === false).length;
+                  const keptCount = total - toRemove;
+                  return (
+                    <Section
+                      title={`Review Dataset (${total}${total ? ` · keep ${keptCount}` : ""})`}
+                      collapsed={reviewCollapsed}
+                      onToggle={() => setReviewCollapsed(c => !c)}
+                      actions={
+                        <>
+                          <button onClick={(e) => { e.stopPropagation(); fetchDatasetImages(); }} disabled={datasetLoading}
+                            style={{ padding: "5px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: "transparent", color: theme.textMuted, fontSize: 11, cursor: datasetLoading ? "wait" : "pointer" }}>
+                            {datasetLoading ? "Loading…" : "Refresh"}
+                          </button>
+                          <button onClick={(e) => { e.stopPropagation(); applyDatasetDeletes(); }} disabled={toRemove === 0 || pipelineStatus.running}
+                            style={{
+                              padding: "5px 12px", borderRadius: 6, border: "none", fontSize: 11, fontWeight: 600,
+                              cursor: toRemove === 0 || pipelineStatus.running ? "default" : "pointer",
+                              background: toRemove > 0 ? theme.danger : theme.surfaceAlt,
+                              color: toRemove > 0 ? "#fff" : theme.textDim,
+                              fontFamily: "'DM Sans', sans-serif",
+                            }}>
+                            Delete {toRemove > 0 ? `(${toRemove})` : ""}
+                          </button>
+                        </>
+                      }>
+                      {total === 0 ? (
+                        <div style={{ fontSize: 12, color: theme.textDim, textAlign: "center", padding: 20 }}>
+                          {datasetLoading ? "Loading…" : "No images in dataset yet. Run Export first."}
+                        </div>
+                      ) : (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8, maxHeight: 520, overflowY: "auto" }}>
+                          {datasetImages.map(im => {
+                            const keep = datasetKeep[im.filename] !== false;
+                            return (
+                              <div key={im.filename}
+                                onClick={() => toggleDatasetKeep(im.filename)}
+                                style={{
+                                  position: "relative", borderRadius: 8, overflow: "hidden", cursor: "pointer",
+                                  border: `2px solid ${keep ? theme.border : theme.danger}`,
+                                  opacity: keep ? 1 : 0.45,
+                                  background: theme.bg, transition: "opacity 0.15s, border-color 0.15s",
+                                }}
+                                title={im.caption || im.filename}>
+                                <img src={`${API}/image/serve-by-path?path=${encodeURIComponent(im.path)}`}
+                                  alt={im.filename} loading="lazy"
+                                  style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover", display: "block" }} />
+                                <div style={{ position: "absolute", top: 6, left: 6,
+                                  width: 18, height: 18, borderRadius: 4,
+                                  background: keep ? theme.accent : "rgba(0,0,0,0.6)",
+                                  border: `1px solid ${keep ? theme.accent : theme.danger}`,
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                  color: "#fff", fontSize: 12, fontWeight: 700,
+                                }}>{keep ? "✓" : "✗"}</div>
+                                <div style={{
+                                  position: "absolute", bottom: 0, left: 0, right: 0,
+                                  padding: "12px 8px 6px",
+                                  background: "linear-gradient(transparent, rgba(0,0,0,0.85))",
+                                  fontSize: 10, color: "#fff", fontFamily: "'Space Mono', monospace",
+                                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                                }}>
+                                  {im.filename}
+                                  {!im.has_caption && <span style={{ color: theme.warning, marginLeft: 6 }}>· no caption</span>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </Section>
+                  );
+                })()}
 
                 {/* Loss Chart */}
                 <LossChart data={pipelineStatus.loss_data} />

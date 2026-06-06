@@ -132,7 +132,7 @@ def create_project(
     description: str = "",
     trigger_word: str = "",
     tagging_prompt: str = "",
-    tagging_model: str = "qwen2.5vl:32b ",
+    tagging_model: str = "qwen3-vl:8b",
     learning_rate: str = "5e-5",
     network_dim: int = 32,
     network_alpha: int = 16,
@@ -239,7 +239,7 @@ def create_project_from_path(
     description: str = "",
     trigger_word: str = "",
     tagging_prompt: str = "",
-    tagging_model: str = "qwen2.5vl:32b",
+    tagging_model: str = "qwen3-vl:8b",
     learning_rate: str = "5e-5",
     network_dim: int = 32,
     network_alpha: int = 16,
@@ -406,7 +406,6 @@ def _write_project_toml(project_dir, name, description, trigger_word, tagging_pr
         'optimizer = "adamw8bit"',
         'mixed_precision = "bf16"',
         "max_workers = 2",
-        "discrete_flow_shift = 2.2",
         "",
         "[training.models]",
         f'dit_model = "{dit_model}"',
@@ -493,7 +492,7 @@ def start_tagging(project_dir: str):
         _log(f"WARNING: Could not parse project.toml: {e}. Using defaults.")
         config = {}
     tagging = config.get("tagging", {})
-    model = tagging.get("model", "qwen2.5vl:32b  ")
+    model = tagging.get("model", "qwen3-vl:8b")
     api_url = tagging.get("api_url", "http://localhost:11434")
     prompt = tagging.get("prompt", "Describe this image in detail.")
     trigger_word = tagging.get("trigger_word", "")
@@ -603,7 +602,7 @@ def start_tagging(project_dir: str):
 # Step 3: Cache VAE + Text Encoder
 # ──────────────────────────────────────────────
 
-def start_cache(project_dir: str, cache_type: str = "both"):
+def start_cache(project_dir: str, cache_type: str = "both", debug_mode: bool = False):
     """Run VAE and/or text encoder caching as subprocess."""
     global _current_proc, _stop_flag
     _stop_flag = False
@@ -631,9 +630,10 @@ def start_cache(project_dir: str, cache_type: str = "both"):
 
     steps_to_run = []
     if cache_type in ("both", "vae"):
-        steps_to_run.append(("cache_vae", vae_path, "qwen_image_cache_latents.py", [
-            "--dataset_config", str(dataset_config), "--vae", str(vae_path)
-        ]))
+        vae_args = ["--dataset_config", str(dataset_config), "--vae", str(vae_path)]
+        if debug_mode:
+            vae_args.append("--debug_mode")
+        steps_to_run.append(("cache_vae", vae_path, "qwen_image_cache_latents.py", vae_args))
     if cache_type in ("both", "te"):
         steps_to_run.append(("cache_te", te_path, "qwen_image_cache_text_encoder_outputs.py", [
             "--dataset_config", str(dataset_config), "--text_encoder", str(te_path),
@@ -754,9 +754,8 @@ def start_training(project_dir: str):
         "--dataset_config", str(dataset_config),
         "--sdpa",
         "--mixed_precision", training.get("mixed_precision", "bf16"),
-        "--timestep_sampling", "shift",
+        "--timestep_sampling", "qwen_shift",
         "--weighting_scheme", "none",
-        "--discrete_flow_shift", str(training.get("discrete_flow_shift", 2.2)),
         "--optimizer_type", training.get("optimizer", "adamw8bit"),
         "--learning_rate", str(training.get("learning_rate", "5e-5")),
         "--gradient_checkpointing",
@@ -927,7 +926,7 @@ def read_project_config(project_dir) -> dict:
         "description": config.get("project", {}).get("description", ""),
         "trigger_word": tagging.get("trigger_word", ""),
         "tagging_prompt": tagging.get("prompt", ""),
-        "tagging_model": tagging.get("model", "qwen2.5vl:32b"),
+        "tagging_model": tagging.get("model", "qwen3-vl:8b"),
         "learning_rate": str(training.get("learning_rate", "5e-5")),
         "network_dim": int(training.get("network_dim", 32)),
         "network_alpha": int(training.get("network_alpha", 16)),
@@ -956,6 +955,75 @@ def update_project_config(project_dir, name, description, trigger_word, tagging_
 # ──────────────────────────────────────────────
 # Project listing
 # ──────────────────────────────────────────────
+
+_DATASET_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
+
+
+def list_dataset_images(project_dir):
+    """Return [{filename, path, caption}] for images in the project dataset folder."""
+    project_dir = Path(project_dir)
+    dataset_dir = project_dir / "dataset"
+    if not dataset_dir.exists():
+        return {"images": [], "dataset_dir": str(dataset_dir)}
+
+    items = []
+    for f in sorted(dataset_dir.iterdir()):
+        if not f.is_file() or f.suffix.lower() not in _DATASET_EXTS:
+            continue
+        caption_path = f.with_suffix(".txt")
+        caption = ""
+        if caption_path.exists():
+            try:
+                caption = caption_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                caption = ""
+        items.append({
+            "filename": f.name,
+            "path": str(f),
+            "caption": caption,
+            "has_caption": caption_path.exists(),
+        })
+    return {"images": items, "dataset_dir": str(dataset_dir)}
+
+
+def delete_dataset_images(project_dir, filenames):
+    """Delete the given image files and their paired .txt captions."""
+    project_dir = Path(project_dir)
+    dataset_dir = project_dir / "dataset"
+    if not dataset_dir.exists():
+        return {"error": "Dataset directory not found"}
+
+    deleted = []
+    errors = []
+    for name in filenames:
+        # Reject any path separators — only bare filenames in the dataset dir
+        if "/" in name or "\\" in name or name in ("", ".", ".."):
+            errors.append(f"Invalid filename: {name}")
+            continue
+        img_path = dataset_dir / name
+        if not img_path.exists():
+            errors.append(f"Not found: {name}")
+            continue
+        # Confine to dataset_dir
+        try:
+            img_path.resolve().relative_to(dataset_dir.resolve())
+        except ValueError:
+            errors.append(f"Outside dataset dir: {name}")
+            continue
+        try:
+            img_path.unlink()
+            deleted.append(name)
+            caption_path = img_path.with_suffix(".txt")
+            if caption_path.exists():
+                caption_path.unlink()
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+
+    _log(f"Dataset review: deleted {len(deleted)} image(s) from {dataset_dir}")
+    return {"deleted": deleted, "errors": errors, "remaining": len([
+        f for f in dataset_dir.iterdir() if f.is_file() and f.suffix.lower() in _DATASET_EXTS
+    ])}
+
 
 def list_projects():
     """List existing projects."""
