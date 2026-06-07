@@ -538,6 +538,8 @@ def start_tagging(project_dir: str):
             if _stop_flag:
                 _set_step("tag", "error", f"Stopped at {tagged}/{len(images)}")
                 _log(f"Tagging stopped. Tagged: {tagged}, Skipped: {skipped}, Failed: {failed}")
+                _unload_ollama_model(api_url, model)
+                _flush_vram()
                 return
 
             caption_path = img_path.with_suffix(".txt")
@@ -592,6 +594,8 @@ def start_tagging(project_dir: str):
 
         _set_step("tag", "done", f"{tagged} tagged, {skipped} skipped, {failed} failed")
         _log(f"Tagging complete. Tagged: {tagged}, Skipped: {skipped}, Failed: {failed}")
+        _unload_ollama_model(api_url, model)
+        _flush_vram()
 
     _current_thread = threading.Thread(target=_tag_worker, daemon=True)
     _current_thread.start()
@@ -1067,6 +1071,19 @@ def _flush_vram():
             _log(f"VRAM flushed. Free: {torch.cuda.mem_get_info()[0] / 1024**3:.1f} GB")
     except Exception as e:
         _log(f"VRAM flush skipped: {e}")
+
+
+def _unload_ollama_model(api_url: str, model: str):
+    """Ask Ollama to evict a model from VRAM immediately (keep_alive=0)."""
+    try:
+        requests.post(
+            f"{api_url}/api/generate",
+            json={"model": model, "keep_alive": 0},
+            timeout=10,
+        )
+        _log(f"Ollama model unloaded: {model}")
+    except Exception as e:
+        _log(f"Ollama unload skipped: {e}")
 
 def _read_toml(path):
     """Read a TOML file."""

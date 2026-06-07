@@ -9,6 +9,8 @@ import json
 import signal
 import asyncio
 import subprocess
+import threading
+from collections import deque
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -21,7 +23,7 @@ from pydantic import BaseModel
 
 from database import (
     init_db, scan_dataset_root, get_filter_options, filter_movies,
-    get_random_images, get_db_stats, get_db
+    get_random_images, get_db_stats, get_db, DB_PATH
 )
 
 
@@ -370,12 +372,33 @@ async def movies_by_aspect():
 # ──────────────────────────────────────────────
 
 tagger_process = {
-    "proc": None,  # subprocess.Popen object
+    "proc": None,         # subprocess.Popen object
+    "log": deque(maxlen=200),  # rolling tail of stdout/stderr lines
+    "exit_code": None,    # last completed run's exit code
+    "reader": None,       # background thread draining the pipe
 }
 
 
+def _drain_tagger_output(proc, buf):
+    """Forward subprocess output to parent stdout AND a rolling buffer."""
+    try:
+        for line in iter(proc.stdout.readline, ""):
+            if not line:
+                break
+            line = line.rstrip("\n")
+            buf.append(line)
+            print(f"[tagger] {line}", flush=True)
+    except Exception as e:
+        buf.append(f"[reader error] {e}")
+    finally:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+
+
 class TaggerRequest(BaseModel):
-    model: str = "qwen2.5vl:7b"
+    model: str = "qwen3-vl:8b"
     api_url: str = "http://localhost:11434"
     batch_size: Optional[int] = None
     movie_id: Optional[int] = None
@@ -389,7 +412,7 @@ async def start_tagger(req: TaggerRequest):
     if tagger_process["proc"] is not None and tagger_process["proc"].poll() is None:
         raise HTTPException(400, "Tagger already running")
 
-    db_path = os.environ.get("CURATOR_DB_PATH", "curator.db")
+    db_path = DB_PATH
     script_path = Path(__file__).parent / "tagger.py"
 
     cmd = [
@@ -403,32 +426,72 @@ async def start_tagger(req: TaggerRequest):
     if req.movie_id:
         cmd.extend(["--movie-id", str(req.movie_id)])
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    # Reset state from any prior run
+    tagger_process["log"].clear()
+    tagger_process["exit_code"] = None
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,  # line-buffered so the UI gets output promptly
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Failed to launch tagger: {e}")
+
     tagger_process["proc"] = proc
+    reader = threading.Thread(
+        target=_drain_tagger_output,
+        args=(proc, tagger_process["log"]),
+        daemon=True,
+    )
+    reader.start()
+    tagger_process["reader"] = reader
+
+    # Brief sleep so we can catch instant-fail crashes (e.g. missing model)
+    # and surface them in the response instead of returning a phantom "started".
+    await asyncio.sleep(0.4)
+    if proc.poll() is not None:
+        # Give the reader a moment to flush remaining output
+        reader.join(timeout=0.5)
+        tagger_process["exit_code"] = proc.returncode
+        tagger_process["proc"] = None
+        tail = "\n".join(list(tagger_process["log"])[-30:])
+        raise HTTPException(
+            500,
+            f"Tagger exited immediately (code {proc.returncode}). Output:\n{tail or '(no output)'}",
+        )
 
     return {"status": "started", "pid": proc.pid, "model": req.model}
 
 
 @app.post("/api/tagger/stop")
 async def stop_tagger():
-    """Send SIGINT to the tagger for graceful shutdown."""
+    """Kill the tagger: SIGTERM first, escalate to SIGKILL if it doesn't die."""
     proc = tagger_process.get("proc")
     if proc is None or proc.poll() is not None:
         return {"status": "not_running"}
 
-    proc.send_signal(signal.SIGINT)
-    return {"status": "stop_requested", "pid": proc.pid}
+    pid = proc.pid
+    proc.terminate()
+    # Give it 2 seconds to clean up (DB commits, status flush, VRAM unload)
+    for _ in range(20):
+        await asyncio.sleep(0.1)
+        if proc.poll() is not None:
+            return {"status": "stopped", "pid": pid, "exit_code": proc.returncode, "method": "SIGTERM"}
+
+    # Still alive — hard kill
+    proc.kill()
+    await asyncio.sleep(0.2)
+    return {"status": "killed", "pid": pid, "exit_code": proc.returncode, "method": "SIGKILL"}
 
 
 @app.get("/api/tagger/status")
 async def tagger_status():
     """Get tagger status from the status file + process state."""
-    db_path = os.environ.get("CURATOR_DB_PATH", "curator.db")
+    db_path = DB_PATH
     status_path = Path(db_path).parent / "tagger_status.json"
 
     status = {}
@@ -447,18 +510,24 @@ async def tagger_status():
             status["pid"] = proc.pid
         else:
             status["process_running"] = False
+            tagger_process["exit_code"] = proc.returncode
             tagger_process["proc"] = None
     else:
         status["process_running"] = False
+
+    # Always include the rolling log + last exit code so the UI can show
+    # something meaningful when a run dies (e.g. missing Ollama model).
+    status["log_tail"] = list(tagger_process["log"])[-40:]
+    status["exit_code"] = tagger_process["exit_code"]
 
     return status
 
 
 @app.get("/api/tagger/stats")
-async def tagger_stats(model: str = "qwen2.5vl:7b"):
+async def tagger_stats(model: str = "qwen3-vl:8b"):
     """Get tagging progress statistics."""
     from tagger import get_tag_stats
-    db_path = os.environ.get("CURATOR_DB_PATH", "curator.db")
+    db_path = DB_PATH
     return get_tag_stats(db_path, model)
 
 

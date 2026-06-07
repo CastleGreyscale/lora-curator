@@ -11,7 +11,9 @@ from datetime import datetime
 from contextlib import contextmanager
 from typing import Optional
 
-DB_PATH = os.environ.get("CURATOR_DB_PATH", "curator.db")
+# Pin to the project-root curator.db regardless of CWD.
+_DEFAULT_DB_PATH = str((Path(__file__).resolve().parent.parent / "curator.db"))
+DB_PATH = os.environ.get("CURATOR_DB_PATH", _DEFAULT_DB_PATH)
 
 
 def get_db_path():

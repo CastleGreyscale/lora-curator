@@ -75,6 +75,127 @@ function StatCard({ label, value, sub, icon }) {
   );
 }
 
+function TaggerPanel({ status, form, setForm, busy, onStart, onStop, onRefresh }) {
+  const running = !!status?.process_running;
+  const processed = status?.processed || 0;
+  const total = status?.total || 0;
+  const failed = status?.failed || 0;
+  const rate = status?.rate || 0;
+  const eta = status?.eta_seconds || 0;
+  const pct = total > 0 ? Math.min(100, (processed / total) * 100) : 0;
+  const etaHours = Math.floor(eta / 3600);
+  const etaMins = Math.floor((eta % 3600) / 60).toString().padStart(2, "0");
+  const imgSrc = status?.current_image_path ? `${API}/image/serve-by-path?path=${encodeURIComponent(status.current_image_path)}` : null;
+  const errored = !running && status?.exit_code != null && status.exit_code !== 0;
+  const logTail = status?.log_tail || [];
+
+  return (
+    <div style={{ background: theme.surface, border: `1px solid ${errored ? theme.danger : running ? theme.success : theme.border}`, borderRadius: 12, padding: 18, marginBottom: 16, boxShadow: running ? `0 0 24px ${theme.success}11` : errored ? `0 0 24px ${theme.danger}22` : "none", transition: "all 0.3s" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+        <div style={{ width: 10, height: 10, borderRadius: "50%", background: errored ? theme.danger : running ? theme.success : theme.textDim, boxShadow: running ? `0 0 10px ${theme.success}` : errored ? `0 0 10px ${theme.danger}` : "none", animation: running ? "pulse 1.5s infinite" : "none" }} />
+        <div style={{ fontSize: 14, fontWeight: 600, color: errored ? theme.danger : theme.text, letterSpacing: 0.3 }}>
+          {running ? "Tagger Running" : errored ? `Tagger Failed (exit ${status.exit_code})` : (processed > 0 ? "Tagger Idle" : "Tagger Ready")}
+        </div>
+        {status?.model && (<div style={{ fontSize: 11, color: theme.textDim, fontFamily: "'Space Mono', monospace", marginLeft: 4 }}>{status.model}</div>)}
+        <button onClick={onRefresh} style={{ marginLeft: "auto", padding: "4px 10px", borderRadius: 5, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted, fontSize: 11, cursor: "pointer" }}>Refresh</button>
+      </div>
+
+      {/* Control row */}
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: running || processed > 0 ? 16 : 0 }}>
+        <div style={{ flex: "1 1 220px", minWidth: 200 }}>
+          <label style={{ fontSize: 10, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Model</label>
+          <input type="text" value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))} disabled={running}
+            placeholder="qwen3-vl:8b"
+            style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 13, fontFamily: "'Space Mono', monospace", outline: "none", boxSizing: "border-box", opacity: running ? 0.5 : 1 }} />
+        </div>
+        <div style={{ flex: "0 0 140px" }}>
+          <label style={{ fontSize: 10, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Batch Size</label>
+          <input type="number" min="1" value={form.batch_size} onChange={e => setForm(f => ({ ...f, batch_size: e.target.value }))} disabled={running}
+            placeholder="all"
+            style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 13, fontFamily: "'Space Mono', monospace", outline: "none", boxSizing: "border-box", opacity: running ? 0.5 : 1 }} />
+        </div>
+        <button onClick={onStart} disabled={busy || running || !form.model}
+          style={{ padding: "9px 22px", borderRadius: 8, border: "none", background: (busy || running) ? theme.surfaceAlt : `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})`, color: (busy || running) ? theme.textDim : "white", fontSize: 13, fontWeight: 600, cursor: (busy || running || !form.model) ? "default" : "pointer", fontFamily: "'DM Sans', sans-serif", letterSpacing: 0.5 }}>
+          {busy && !running ? "Starting…" : "▶ Start Tagging"}
+        </button>
+        <button onClick={onStop} disabled={busy || !running}
+          title={running ? "Stop the tagger process" : "Tagger is not running"}
+          style={{ padding: "9px 22px", borderRadius: 8, border: `1px solid ${running ? theme.danger : theme.border}`, background: running ? `${theme.danger}22` : "transparent", color: running ? theme.danger : theme.textDim, fontSize: 13, fontWeight: 600, cursor: (busy || !running) ? "default" : "pointer", fontFamily: "'DM Sans', sans-serif", letterSpacing: 0.5 }}>
+          {busy && running ? "Stopping…" : "■ Stop"}
+        </button>
+      </div>
+
+      {/* Live progress */}
+      {(running || processed > 0) && (
+        <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, fontSize: 12, color: theme.textMuted, fontFamily: "'Space Mono', monospace" }}>
+            <span>{processed.toLocaleString()} / {total.toLocaleString()} <span style={{ color: theme.textDim }}>({pct.toFixed(1)}%)</span></span>
+            <span style={{ display: "flex", gap: 14 }}>
+              {rate > 0 && <span style={{ color: theme.textDim }}>{rate} img/s</span>}
+              {failed > 0 && <span style={{ color: theme.danger }}>{failed} failed</span>}
+              {running && eta > 0 && <span style={{ color: theme.textDim }}>~{etaHours}h{etaMins}m left</span>}
+            </span>
+          </div>
+          <div style={{ height: 6, background: theme.bg, borderRadius: 3, overflow: "hidden", border: `1px solid ${theme.border}` }}>
+            <div style={{ width: `${pct}%`, height: "100%", background: `linear-gradient(90deg, ${theme.accentDim}, ${theme.accent})`, transition: "width 0.4s ease-out", boxShadow: running ? `0 0 10px ${theme.accent}88` : "none" }} />
+          </div>
+
+          {/* Current image + last tags */}
+          {(imgSrc || status?.last_tags?.length) && (
+            <div style={{ display: "grid", gridTemplateColumns: imgSrc ? "180px 1fr" : "1fr", gap: 14, marginTop: 14 }}>
+              {imgSrc && (
+                <div style={{ position: "relative", aspectRatio: "1 / 1", borderRadius: 8, overflow: "hidden", border: `1px solid ${theme.border}`, background: theme.bg }}>
+                  <img src={imgSrc} alt={status.current_image_name || ""} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                  {running && (<div style={{ position: "absolute", top: 6, left: 6, padding: "2px 6px", borderRadius: 4, background: "rgba(0,0,0,0.6)", color: theme.success, fontSize: 9, fontFamily: "'Space Mono', monospace", letterSpacing: 1, textTransform: "uppercase" }}>● LIVE</div>)}
+                </div>
+              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+                {status?.current_movie && (
+                  <div style={{ fontSize: 12, color: theme.textMuted }}>
+                    <span style={{ color: theme.textDim, marginRight: 6 }}>movie</span>{status.current_movie}
+                  </div>
+                )}
+                {status?.current_image_name && (
+                  <div style={{ fontSize: 11, color: theme.textDim, fontFamily: "'Space Mono', monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {status.current_image_name}
+                  </div>
+                )}
+                {status?.last_tags?.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 10, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>Latest Tags</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                      {status.last_tags.map((tag, i) => (
+                        <span key={i} style={{ padding: "3px 8px", borderRadius: 5, background: `${theme.accent}15`, border: `1px solid ${theme.accent}55`, color: theme.accent, fontSize: 11, fontFamily: "'DM Sans', sans-serif" }}>{tag}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {status?.last_caption && !status?.last_tags?.length && (
+                  <div style={{ fontSize: 12, color: theme.textMuted, lineHeight: 1.5, padding: "8px 12px", borderRadius: 6, background: theme.bg, border: `1px solid ${theme.border}`, maxHeight: 120, overflowY: "auto" }}>
+                    {status.last_caption}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Log tail — shown when running, errored, or any output exists */}
+      {logTail.length > 0 && (
+        <details open={errored} style={{ marginTop: 14 }}>
+          <summary style={{ fontSize: 11, color: errored ? theme.danger : theme.textDim, letterSpacing: 1, textTransform: "uppercase", cursor: "pointer", marginBottom: 6 }}>
+            {errored ? "Error Output" : "Log"} <span style={{ opacity: 0.6, marginLeft: 4 }}>({logTail.length} lines)</span>
+          </summary>
+          <pre style={{ margin: 0, padding: "10px 12px", borderRadius: 6, background: theme.bg, border: `1px solid ${errored ? theme.danger : theme.border}`, color: errored ? "#fca5a5" : theme.textMuted, fontSize: 11, fontFamily: "'Space Mono', monospace", lineHeight: 1.5, maxHeight: 220, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {logTail.join("\n")}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function Section({ title, children, actions, collapsed, onToggle, style: containerStyle }) {
   return (
     <div style={{
@@ -643,6 +764,9 @@ export default function App() {
   const [tagImages, setTagImages] = useState([]);
   const [tagImagesLoading, setTagImagesLoading] = useState(false);
   const [taggerStatus, setTaggerStatus] = useState(null);
+  const [taggerForm, setTaggerForm] = useState({ model: "qwen3-vl:8b", batch_size: 500 });
+  const [taggerBusy, setTaggerBusy] = useState(false);
+  const taggerInterval = useRef(null);
 
   // Pipeline state
   const [pipelineStatus, setPipelineStatus] = useState(null);
@@ -670,6 +794,16 @@ export default function App() {
 
   useEffect(() => { fetchStats(); fetchFilterOptions(); fetchSelectionSummary(); fetchBrowseMovies(1); }, []);
   useEffect(() => { if (activeTab === "tags") { fetchTopTags(); fetchTaggerStatus(); } }, [activeTab]);
+  useEffect(() => {
+    const shouldPoll = activeTab === "tags" && taggerStatus?.process_running;
+    if (shouldPoll && !taggerInterval.current) {
+      taggerInterval.current = setInterval(fetchTaggerStatus, 1500);
+    } else if (!shouldPoll && taggerInterval.current) {
+      clearInterval(taggerInterval.current); taggerInterval.current = null;
+      if (activeTab === "tags") fetchTopTags();
+    }
+    return () => { if (taggerInterval.current) { clearInterval(taggerInterval.current); taggerInterval.current = null; } };
+  }, [activeTab, taggerStatus?.process_running]);
   useEffect(() => {
     if (activeTab === "pipeline") {
       fetchPipelineStatus(); fetchPipelineProjects();
@@ -736,6 +870,28 @@ export default function App() {
   const searchTags = async (query) => { setTagSearch(query); if (!query.trim()) { setTagSearchResults([]); return; } try { const r = await fetch(`${API}/tags/search?q=${encodeURIComponent(query)}&limit=30`); setTagSearchResults(await r.json()); } catch (e) {} };
   const fetchTagImages = async () => { if (tagInclude.length === 0 && tagExclude.length === 0) return; setTagImagesLoading(true); try { const r = await fetch(`${API}/images/filter-by-tags`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ include_tags: tagInclude, exclude_tags: tagExclude, count: 48 }) }); setTagImages(await r.json()); } catch (e) {} finally { setTagImagesLoading(false); } };
   const fetchTaggerStatus = async () => { try { const r = await fetch(`${API}/tagger/status`); setTaggerStatus(await r.json()); } catch (e) {} };
+  const startTagger = async () => {
+    setTaggerBusy(true);
+    try {
+      const body = { model: taggerForm.model };
+      const n = parseInt(taggerForm.batch_size, 10);
+      if (Number.isFinite(n) && n > 0) body.batch_size = n;
+      const r = await fetch(`${API}/tagger/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        console.error("Tagger start failed:", err.detail);
+        alert(err.detail || "Failed to start tagger (see panel for output)");
+      }
+      await fetchTaggerStatus();
+    } catch (e) { alert(`Start failed: ${e.message}`); }
+    finally { setTaggerBusy(false); }
+  };
+  const stopTagger = async () => {
+    setTaggerBusy(true);
+    try { await fetch(`${API}/tagger/stop`, { method: "POST" }); await fetchTaggerStatus(); }
+    catch (e) { alert(`Stop failed: ${e.message}`); }
+    finally { setTaggerBusy(false); }
+  };
   const toggleTag = (list, setList, tag) => { setList(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]); };
 
   // ── Pipeline functions ──
@@ -930,19 +1086,16 @@ export default function App() {
 
         {/* ═══ TAGS TAB ═══ */}
         {activeTab === "tags" && (<div>
-          {taggerStatus && (taggerStatus.process_running || taggerStatus.processed > 0) && (
-            <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 10, padding: "14px 20px", marginBottom: 16, display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-              <div style={{ width: 8, height: 8, borderRadius: "50%", background: taggerStatus.process_running ? theme.success : theme.textDim, boxShadow: taggerStatus.process_running ? `0 0 8px ${theme.success}` : "none" }} />
-              <div style={{ fontSize: 13, color: theme.text }}>{taggerStatus.process_running ? "Tagger running" : "Tagger idle"}</div>
-              {taggerStatus.processed > 0 && (<>
-                <div style={{ fontSize: 12, color: theme.textMuted, fontFamily: "'Space Mono', monospace" }}>{taggerStatus.processed?.toLocaleString()}/{taggerStatus.total?.toLocaleString()} images</div>
-                {taggerStatus.rate > 0 && (<div style={{ fontSize: 12, color: theme.textDim }}>{taggerStatus.rate} img/s</div>)}
-                {taggerStatus.eta_seconds > 0 && taggerStatus.process_running && (<div style={{ fontSize: 12, color: theme.textDim }}>~{Math.floor(taggerStatus.eta_seconds / 3600)}h{Math.floor((taggerStatus.eta_seconds % 3600) / 60).toString().padStart(2, "0")}m remaining</div>)}
-                {taggerStatus.current_movie && taggerStatus.process_running && (<div style={{ fontSize: 12, color: theme.textDim, marginLeft: "auto" }}>{taggerStatus.current_movie}</div>)}
-              </>)}
-              <button onClick={fetchTaggerStatus} style={{ marginLeft: "auto", padding: "4px 10px", borderRadius: 5, background: "transparent", border: `1px solid ${theme.border}`, color: theme.textMuted, fontSize: 11, cursor: "pointer" }}>Refresh</button>
-            </div>
-          )}
+          <TaggerPanel
+            status={taggerStatus}
+            form={taggerForm}
+            setForm={setTaggerForm}
+            busy={taggerBusy}
+            onStart={startTagger}
+            onStop={stopTagger}
+            onRefresh={fetchTaggerStatus}
+          />
+
           <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 24 }}>
             <div style={{ position: "sticky", top: 16, alignSelf: "start", maxHeight: "calc(100vh - 140px)", display: "flex", flexDirection: "column" }}>
               <Section title="Tag Filters" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>

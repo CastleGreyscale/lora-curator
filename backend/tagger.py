@@ -24,20 +24,21 @@ from contextlib import contextmanager
 # Config
 # ──────────────────────────────────────────────
 
-DEFAULT_MODEL = "qwen2.5vl:7b"
+DEFAULT_MODEL = "qwen3-vl:8b"
 DEFAULT_API_URL = "http://localhost:11434"
-DEFAULT_DB_PATH = os.environ.get("CURATOR_DB_PATH", "curator.db")
+# Pin to the project-root curator.db regardless of CWD or env. There used to be
+# a stale backend/curator.db that direct CLI runs would tag into by accident.
+DEFAULT_DB_PATH = str((Path(__file__).resolve().parent.parent / "curator.db"))
 
-# Short prompt = fast inference. We want tags, not essays.
-TAG_PROMPT = """List comma-separated tags for this image. Include:
-- shot type (close-up, medium, wide, extreme wide, overhead, low angle)
-- lighting (high-key, low-key, natural, neon, backlit, silhouette, golden hour, harsh, soft)
-- mood (tense, calm, romantic, eerie, melancholy, joyful, ominous, chaotic)
-- setting (interior, exterior, urban, rural, underwater, vehicle, office, bar, street)
-- people (none, single, couple, group, crowd)
-- notable elements (rain, smoke, mirror, shadows, fire, snow, blood, weapon, phone, car)
-
-Tags only. No sentences. No descriptions."""
+# Descriptive-style prompt: qwen3-vl skips its reasoning loop when asked to
+# describe rather than enumerate. Output is a comma-separated phrase list that
+# parse_tags() splits cleanly.
+TAG_PROMPT = (
+    "Describe this image using short comma-separated tags covering shot type, "
+    "lighting, mood, setting, people, and notable visual elements. "
+    "Use 1-3 words per tag. Example: medium shot, low-key lighting, tense, "
+    "interior, single person, shadows, mirror, neon glow."
+)
 
 # Status file for the web UI to read
 STATUS_FILE = "tagger_status.json"
@@ -55,8 +56,9 @@ def signal_handler(sig, frame):
     shutdown_requested = True
 
 
+# SIGINT (Ctrl+C from CLI) = graceful: finish current image, then exit.
+# SIGTERM is left at Python's default so the UI's Stop button kills immediately.
 signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
 
 # ──────────────────────────────────────────────
 # Database helpers
@@ -182,21 +184,37 @@ def tag_image(filepath, api_url, model, prompt):
                 "prompt": prompt,
                 "images": [image_b64],
                 "stream": False,
-                "options": {
-                    "temperature": 0.1,  # Low temp = consistent tags
-                    "num_predict": 150,  # Cap output length — tags are short
-                },
+                "options": {"temperature": 0.3},
             },
-            timeout=60,
+            timeout=120,
         )
         resp.raise_for_status()
-        raw = resp.json().get("response", "").strip()
+        data = resp.json()
+        raw = data.get("response", "").strip()
+        if not raw:
+            # Surface why Ollama returned nothing (e.g. done_reason: "length",
+            # eval_count: 0, an error field, etc.)
+            keys = {k: data.get(k) for k in ("done_reason", "eval_count", "prompt_eval_count", "error") if k in data}
+            print(f"  ⚠ Empty response from Ollama. Meta: {keys}")
         return raw
     except requests.Timeout:
         return None
     except Exception as e:
         print(f"  ✗ API error: {e}")
         return None
+
+
+def unload_ollama_model(api_url, model):
+    """Ask Ollama to evict the model from VRAM immediately (keep_alive=0)."""
+    try:
+        requests.post(
+            f"{api_url}/api/generate",
+            json={"model": model, "keep_alive": 0},
+            timeout=10,
+        )
+        print(f"✓ Ollama model unloaded from VRAM: {model}")
+    except Exception as e:
+        print(f"⚠ Could not unload Ollama model: {e}")
 
 
 def parse_tags(raw_response):
@@ -327,41 +345,46 @@ def run_tagger(
 
         if not tags:
             failed += 1
+            snippet = raw[:300].replace("\n", " ⏎ ")
             print(f"  ✗ {Path(filepath).name} (no tags parsed)")
+            print(f"     raw: {snippet}")
             continue
 
         save_tags(db_path, img["id"], tags, raw, model)
         processed += 1
 
-        # Progress display every 10 images
-        if processed % 10 == 0:
-            elapsed = time.time() - start_time
-            rate = processed / elapsed if elapsed > 0 else 0
-            remaining_est = (total_to_process - processed) / rate if rate > 0 else 0
+        elapsed = time.time() - start_time
+        rate = processed / elapsed if elapsed > 0 else 0
+        remaining_est = (total_to_process - processed) / rate if rate > 0 else 0
 
+        # Per-image status push so the UI can show live progress
+        write_status(
+            db_path,
+            {
+                "running": True,
+                "model": model,
+                "processed": processed,
+                "failed": failed,
+                "total": total_to_process,
+                "rate": round(rate, 2),
+                "eta_seconds": int(remaining_est),
+                "current_movie": current_movie,
+                "current_image_path": filepath,
+                "current_image_name": Path(filepath).name,
+                "last_tags": tags[:20],
+                "last_caption": raw[:500],
+                "updated_at": datetime.now().isoformat(),
+            },
+        )
+
+        # Console progress every 10 images
+        if processed % 10 == 0:
             hours = int(remaining_est // 3600)
             mins = int((remaining_est % 3600) // 60)
-
             print(
                 f"  [{processed}/{total_to_process}] "
                 f"{rate:.1f} img/s — "
                 f"~{hours}h{mins:02d}m remaining"
-            )
-
-            # Write status for web UI
-            write_status(
-                db_path,
-                {
-                    "running": True,
-                    "model": model,
-                    "processed": processed,
-                    "failed": failed,
-                    "total": total_to_process,
-                    "rate": round(rate, 2),
-                    "eta_seconds": int(remaining_est),
-                    "current_movie": current_movie,
-                    "updated_at": datetime.now().isoformat(),
-                },
             )
 
     # Final stats
@@ -389,6 +412,9 @@ def run_tagger(
             "completed_at": datetime.now().isoformat(),
         },
     )
+
+    # Release VRAM so training (or other GPU work) can use it immediately
+    unload_ollama_model(api_url, model)
 
     return 0
 
