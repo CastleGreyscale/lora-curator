@@ -42,6 +42,27 @@ def _env(name, fallback=""):
     # Check .env overrides first, then os.environ, then fallback
     return _env_overrides.get(name, os.environ.get(name, fallback))
 
+_VAR_RE = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+
+def _expand(value):
+    """Expand ${VAR} / $VAR against .env overrides then os.environ.
+
+    Unset names are left as-is so a bad path surfaces literally instead of
+    silently collapsing to a relative one.
+    """
+    def _sub(m):
+        name = m.group(1) or m.group(2)
+        return _env(name, m.group(0))
+    return _VAR_RE.sub(_sub, value or "")
+
+def _config_path(config, key, fallback):
+    """Read a [paths] entry from project.toml, expanding any ${VAR} references.
+
+    Falls back to the .env value when the key is absent or empty.
+    """
+    expanded = _expand(config.get("paths", {}).get(key, ""))
+    return Path(expanded) if expanded else Path(fallback)
+
 def get_projects_root():
     return Path(_env("LORA_PROJECTS_ROOT", "/home/brad/ai/training/lora_projects"))
 
@@ -356,9 +377,11 @@ def _write_project_toml(project_dir, name, description, trigger_word, tagging_pr
                          resolution, enable_samples, sample_prompts, dit_model="qwen_image_bf16.safetensors"):
     """Generate project.toml with user settings + sensible defaults."""
 
-    models_root = str(get_models_root()) or "${COMFYUI_MODELS_ROOT}"
-    projects_root = str(get_projects_root()) or "${LORA_PROJECTS_ROOT}"
-    musubi_root = str(get_musubi_root()) or "${MUSUBI_TUNER_ROOT}"
+    # Write placeholders, not resolved paths, so backend/.env stays the single
+    # source of truth and moving the models is a one-line edit there.
+    models_root = "${COMFYUI_MODELS_ROOT}"
+    projects_root = "${LORA_PROJECTS_ROOT}"
+    musubi_root = "${MUSUBI_TUNER_ROOT}"
 
     # Build TOML manually line by line for reliability
     lines = [
@@ -615,8 +638,8 @@ def start_cache(project_dir: str, cache_type: str = "both", debug_mode: bool = F
     config = _read_toml(project_dir / "project.toml")
     name = config.get("project", {}).get("name", "project")
 
-    models_root = Path(config.get("paths", {}).get("models_root", str(get_models_root())))
-    musubi_root = Path(config.get("paths", {}).get("musubi_tuner_root", str(get_musubi_root())))
+    models_root = _config_path(config, "models_root", get_models_root())
+    musubi_root = _config_path(config, "musubi_tuner_root", get_musubi_root())
 
     if not musubi_root.exists():
         msg = f"Musubi-tuner not found: {musubi_root}"
@@ -716,8 +739,8 @@ def start_training(project_dir: str):
     advanced = training.get("advanced", {})
     models_cfg = training.get("models", {})
 
-    models_root = Path(config.get("paths", {}).get("models_root", str(get_models_root())))
-    musubi_root = Path(config.get("paths", {}).get("musubi_tuner_root", str(get_musubi_root())))
+    models_root = _config_path(config, "models_root", get_models_root())
+    musubi_root = _config_path(config, "musubi_tuner_root", get_musubi_root())
 
     if not musubi_root.exists():
         _set_step("train", "error", f"Musubi-tuner not found: {musubi_root}")

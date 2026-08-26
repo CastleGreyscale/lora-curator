@@ -1,0 +1,152 @@
+# ═══════════════════════════════════════════════════════════════════
+#  LoRA Curator — universal defaults
+# ═══════════════════════════════════════════════════════════════════
+#
+#  Single source of truth for caption prompts and new-project defaults.
+#  Backend reads it via backend/defaults.py; the frontend fetches it from
+#  GET /api/config/defaults, so editing a prompt here needs only a page
+#  reload (the backend runs with --reload and re-reads on each request).
+#
+#  This file does NOT control existing projects. Each project's
+#  datasets/<name>/project.toml is written at creation time and is
+#  authoritative from then on — edit that file (or the UI's config panel)
+#  to change a project already created.
+#
+# ═══════════════════════════════════════════════════════════════════
+
+
+# ── Bulk library tagger ────────────────────────────────────────────
+#  Used by backend/tagger.py, which tags the whole image library into
+#  curator.db. Separate from the per-project pipeline prompt below:
+#  this one produces comma-separated tags for parse_tags() to split,
+#  and feeds tag search/filtering. Keep it terse — it runs over 250k+
+#  images.
+#
+#  Descriptive phrasing is deliberate: qwen3-vl skips its reasoning
+#  loop when asked to describe rather than enumerate.
+
+[tagger]
+model = "qwen3-vl:8b"
+api_url = "http://localhost:11434"
+prompt = '''
+Describe this image using short comma-separated tags covering shot type, lighting, mood, setting, people, and notable visual elements. Use 1-3 words per tag. Example: medium shot, low-key lighting, tense, interior, single person, shadows, mirror, neon glow.
+'''
+
+
+# ── Per-project pipeline defaults ──────────────────────────────────
+#  What the New Project form is populated with on a fresh page load,
+#  before any preset is applied. Unlike the tagger prompt above, this
+#  one produces prose captions that get written to .txt files and
+#  trained on.
+
+[pipeline]
+tagging_model = "qwen3-vl:8b"
+learning_rate = "5e-5"
+network_dim = 32
+network_alpha = 16
+max_epochs = 16
+save_every_n_epochs = 2
+num_repeats = 1
+resolution = 1024
+dit_model = "qwen_image_bf16.safetensors"
+enable_samples = false
+sample_prompts = []
+prompt = '''
+Describe this image in detail for AI training. Include the subject, setting, lighting, mood, color palette, composition, and any notable visual elements.
+'''
+
+
+# ── Training presets ───────────────────────────────────────────────
+#  The buttons above the New Project form. Clicking one overwrites the
+#  matching form fields; anything omitted from a preset keeps its
+#  [pipeline] value. Add a preset by adding a table here — the UI
+#  renders whatever it finds, in file order.
+
+[presets.style]
+label = "Style"
+learning_rate = "3e-5"
+network_dim = 32
+network_alpha = 16
+max_epochs = 12
+save_every_n_epochs = 2
+num_repeats = 1
+resolution = 1024
+prompt = '''
+Describe this image in 3-4 sentences focusing on the visual style and cinematographic qualities.
+
+This is a cinematic image from [BRIEF CONTEXT HELPER].
+
+Emphasize:
+- Lighting, color palette, and film grain characteristics
+- Composition and framing style
+- Mood and atmosphere
+- Brief subject description
+
+Write naturally and descriptively
+'''
+
+[presets.character]
+label = "Character"
+learning_rate = "5e-5"
+network_dim = 32
+network_alpha = 16
+max_epochs = 20
+save_every_n_epochs = 2
+num_repeats = 1
+resolution = 1328
+prompt = '''
+Describe this image in 3-4 sentences focusing on the visual characteristics of the subject.
+
+This is a cinematic image of [BRIEF CONTEXT HELPER].
+
+Emphasize:
+- Wardrobe, props, jewelry
+- Detailed description of face, hands, hair, eyes, nose
+
+Do not mention the setting or environment.
+
+Write naturally and descriptively
+'''
+
+[presets.object]
+label = "Object"
+learning_rate = "1e-4"
+network_dim = 16
+network_alpha = 8
+max_epochs = 12
+save_every_n_epochs = 2
+num_repeats = 4
+resolution = 1328
+prompt = '''
+Describe this image in 3-4 sentences focusing on the visual characteristics of the object.
+
+Emphasize:
+- Shape, material, and surface texture
+- Color and any distinctive markings or features
+- Lettering or logos
+
+Do not mention the setting or environment.
+
+Write naturally and descriptively
+'''
+
+[presets.environment]
+label = "Environment"
+learning_rate = "5e-5"
+network_dim = 32
+network_alpha = 16
+max_epochs = 16
+save_every_n_epochs = 2
+num_repeats = 1
+resolution = 1328
+prompt = '''
+Describe this image in 3-4 sentences focusing on the visual characteristics of the environment.
+
+Emphasize:
+- Architectural elements or landscape features
+- Lighting conditions, time of day, and weather
+- Color palette and film grain
+- Mood and atmosphere
+
+Write naturally and descriptively
+'''

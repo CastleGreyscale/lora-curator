@@ -77,6 +77,16 @@ app.include_router(browse_router)
 from pipeline_routes import router as pipeline_router
 app.include_router(pipeline_router)
 
+
+@app.get("/api/config/defaults")
+async def get_config_defaults():
+    """Serve lora-curator/defaults.toml to the frontend.
+
+    Re-read per request, so editing the file only needs a page reload.
+    """
+    import defaults
+    return defaults.load()
+
 # ──────────────────────────────────────────────
 # Request/Response Models
 # ──────────────────────────────────────────────

@@ -20,25 +20,30 @@ from pathlib import Path
 from datetime import datetime
 from contextlib import contextmanager
 
+# Runs both as a module (imported by main.py) and as a standalone script, so
+# make the sibling import work regardless of CWD.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import defaults
+
 # ──────────────────────────────────────────────
 # Config
 # ──────────────────────────────────────────────
 
-DEFAULT_MODEL = "qwen3-vl:8b"
-DEFAULT_API_URL = "http://localhost:11434"
 # Pin to the project-root curator.db regardless of CWD or env. There used to be
 # a stale backend/curator.db that direct CLI runs would tag into by accident.
 DEFAULT_DB_PATH = str((Path(__file__).resolve().parent.parent / "curator.db"))
 
+# Model, API URL and prompt all live in lora-curator/defaults.toml ([tagger]).
+# Read once at import so a long run can't change prompt mid-flight.
+_TAGGER_DEFAULTS = defaults.load()["tagger"]
+
+DEFAULT_MODEL = _TAGGER_DEFAULTS["model"]
+DEFAULT_API_URL = _TAGGER_DEFAULTS["api_url"]
+
 # Descriptive-style prompt: qwen3-vl skips its reasoning loop when asked to
 # describe rather than enumerate. Output is a comma-separated phrase list that
 # parse_tags() splits cleanly.
-TAG_PROMPT = (
-    "Describe this image using short comma-separated tags covering shot type, "
-    "lighting, mood, setting, people, and notable visual elements. "
-    "Use 1-3 words per tag. Example: medium shot, low-key lighting, tense, "
-    "interior, single person, shadows, mirror, neon glow."
-)
+TAG_PROMPT = _TAGGER_DEFAULTS["prompt"]
 
 # Status file for the web UI to read
 STATUS_FILE = "tagger_status.json"

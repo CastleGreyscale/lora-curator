@@ -6,29 +6,36 @@ Add to main.py:
 """
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 import pipeline
+import defaults
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
+
+
+def _d(key):
+    """Default from lora-curator/defaults.toml [pipeline], read at request time."""
+    return Field(default_factory=lambda: defaults.pipeline_default(key))
 
 
 class CreateProjectRequest(BaseModel):
     name: str
     description: str = ""
     trigger_word: str = ""
-    tagging_prompt: str = "Describe this image in detail for AI training. Include the subject, setting, lighting, mood, color palette, composition, and any notable visual elements."
-    tagging_model: str = "qwen3-vl:8b"
-    learning_rate: str = "5e-5"
-    network_dim: int = 32
-    network_alpha: int = 16
-    max_epochs: int = 16
-    save_every_n_epochs: int = 2
-    num_repeats: int = 1
-    resolution: int = 1024
-    enable_samples: bool = False
-    sample_prompts: List[str] = []
-    dit_model: str = "qwen_image_bf16.safetensors"
+    tagging_prompt: str = _d("prompt")
+    tagging_model: str = _d("tagging_model")
+    learning_rate: str = _d("learning_rate")
+    network_dim: int = _d("network_dim")
+    network_alpha: int = _d("network_alpha")
+    max_epochs: int = _d("max_epochs")
+    save_every_n_epochs: int = _d("save_every_n_epochs")
+    num_repeats: int = _d("num_repeats")
+    resolution: int = _d("resolution")
+    enable_samples: bool = _d("enable_samples")
+    sample_prompts: List[str] = _d("sample_prompts")
+    dit_model: str = _d("dit_model")
+
 
 
 class CreateFromPathRequest(BaseModel):
@@ -36,18 +43,19 @@ class CreateFromPathRequest(BaseModel):
     name: str
     description: str = ""
     trigger_word: str = ""
-    tagging_prompt: str = "Describe this image in detail for AI training. Include the subject, setting, lighting, mood, color palette, composition, and any notable visual elements."
-    tagging_model: str = "qwen3-vl:8b"
-    learning_rate: str = "5e-5"
-    network_dim: int = 32
-    network_alpha: int = 16
-    max_epochs: int = 16
-    save_every_n_epochs: int = 2
-    num_repeats: int = 1
-    resolution: int = 1024
-    enable_samples: bool = False
-    sample_prompts: List[str] = []
-    dit_model: str = "qwen_image_bf16.safetensors"
+    tagging_prompt: str = _d("prompt")
+    tagging_model: str = _d("tagging_model")
+    learning_rate: str = _d("learning_rate")
+    network_dim: int = _d("network_dim")
+    network_alpha: int = _d("network_alpha")
+    max_epochs: int = _d("max_epochs")
+    save_every_n_epochs: int = _d("save_every_n_epochs")
+    num_repeats: int = _d("num_repeats")
+    resolution: int = _d("resolution")
+    enable_samples: bool = _d("enable_samples")
+    sample_prompts: List[str] = _d("sample_prompts")
+    dit_model: str = _d("dit_model")
+
 
 
 class LoadProjectRequest(BaseModel):
@@ -263,6 +271,62 @@ async def delete_dataset_images(req: DeleteDatasetImagesRequest):
     if "error" in result:
         raise HTTPException(400, result["error"])
     return result
+
+
+@router.post("/analyze-captions")
+async def analyze_captions(top_n: int = 200):
+    """Scan the loaded project's caption .txt files and write a frequency report
+    (caption_analysis.json + .md) to the project root. Post-training tool — runs
+    independently of the pipeline progression."""
+    if not pipeline.status["project_dir"]:
+        raise HTTPException(400, "No project loaded")
+    import caption_analyzer
+    try:
+        result = caption_analyzer.analyze_and_write(
+            pipeline.status["project_dir"], top_n=top_n,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(400, str(e))
+    return {
+        "paths": result["paths"],
+        "captions_analyzed": result["stats"]["captions_analyzed"],
+        "captions_total": result["stats"]["captions_total"],
+        "total_tokens": result["stats"]["total_tokens"],
+        "trigger_word": result["stats"]["trigger_word"],
+        "generated_at": result["stats"]["generated_at"],
+    }
+
+
+@router.get("/caption-analysis")
+async def get_caption_analysis(preview: int = 30):
+    """Return the existing caption_analysis.json for the loaded project, with
+    top-N previews of each n-gram bucket for cheap UI rendering."""
+    if not pipeline.status["project_dir"]:
+        raise HTTPException(400, "No project loaded")
+    from pathlib import Path
+    import json
+    path = Path(pipeline.status["project_dir"]) / "caption_analysis.json"
+    if not path.exists():
+        return {"exists": False}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read caption_analysis.json: {e}")
+    return {
+        "exists": True,
+        "generated_at": data.get("generated_at"),
+        "trigger_word": data.get("trigger_word"),
+        "captions_analyzed": data.get("captions_analyzed"),
+        "captions_total": data.get("captions_total"),
+        "total_tokens": data.get("total_tokens"),
+        "unigrams": data.get("unigrams", [])[:preview],
+        "bigrams": data.get("bigrams", [])[:preview],
+        "trigrams": data.get("trigrams", [])[:preview],
+        "paths": {
+            "json": str(path),
+            "md": str(path.with_name("caption_analysis.md")),
+        },
+    }
 
 
 @router.get("/env")

@@ -679,55 +679,28 @@ function BrowseFooter({
 }
 
 // ═══════════════════════════════════════════
-// LoRA Training Presets
+// Defaults & presets — see lora-curator/defaults.toml
 // ═══════════════════════════════════════════
+//
+// Prompts, form defaults and training presets all live in that file and are
+// fetched from /api/config/defaults on mount. Edit the TOML and reload the
+// page — nothing here needs changing to add a preset or reword a prompt.
 
-const LORA_PRESETS = {
-  style: {
-    label: "Style",
-    tagging_prompt: `Describe this image in 3-4 sentences focusing on the visual style and cinematographic qualities.\n\nThis is a cinematic image from an Italian Horror movie .\n\nEmphasize:\n- Lighting, color palette, and film grain characteristics\n- Composition and framing style\n- Mood and atmosphere\n- Brief subject description\n\nWrite naturally and descriptively`,
-    learning_rate: "3e-5",
-    network_dim: 32,
-    network_alpha: 16,
-    max_epochs: 12,
-    save_every_n_epochs: 2,
-    num_repeats: 1,
-    resolution: 1024,
-  },
-  character: {
-    label: "Character",
-    tagging_prompt: `Describe this image in 3-4 sentences focusing on the visual characteristics of the subject.\n\nThis is a cinematic image of [BRIEF CONTEXT HELPER].\n\nEmphasize:\n- Wardrobe, props, jewelry,  \n- Detailed description of face, hands, hair, eyes, nose\n\nWrite naturally and descriptively`,
-    learning_rate: "5e-5",
-    network_dim: 32,
-    network_alpha: 16,
-    max_epochs: 20,
-    save_every_n_epochs: 2,
-    num_repeats: 1,
-    resolution: 1328,
-  },
-  object: {
-    label: "Object",
-    tagging_prompt: `Describe this image in 3-4 sentences focusing on the visual characteristics of the object.\n\nEmphasize:\n- Shape, material, and surface texture\n- Color and any distinctive markings or features\n- Size relative to surroundings\n- Brief context or setting\n\nWrite naturally and descriptively`,
-    learning_rate: "1e-4",
-    network_dim: 16,
-    network_alpha: 8,
-    max_epochs: 12,
-    save_every_n_epochs: 2,
-    num_repeats: 80,
-    resolution: 1328,
-  },
-  environment: {
-    label: "Environment",
-    tagging_prompt: `Describe this image in 3-4 sentences focusing on the visual characteristics of the environment.\n\nEmphasize:\n- Architectural elements or landscape features\n- Lighting conditions, time of day, and weather\n- Color palette and film grain\n- Mood and atmosphere\n\nWrite naturally and descriptively`,
-    learning_rate: "5e-5",
-    network_dim: 32,
-    network_alpha: 16,
-    max_epochs: 16,
-    save_every_n_epochs: 2,
-    num_repeats: 1,
-    resolution: 1328,
-  },
+// Only used if the fetch fails, so the form is never empty.
+const FALLBACK_PIPELINE_DEFAULTS = {
+  tagging_prompt: "Describe this image in detail for AI training.",
+  tagging_model: "qwen3-vl:8b",
+  learning_rate: "5e-5", network_dim: 32, network_alpha: 16, max_epochs: 16,
+  save_every_n_epochs: 2, num_repeats: 1, resolution: 1024,
+  enable_samples: false, sample_prompts: [],
+  dit_model: "qwen_image_bf16.safetensors",
 };
+
+// The API sends [pipeline]/[presets] with the prompt under `prompt`; the form
+// and the create/save endpoints both call it `tagging_prompt`.
+function promptToForm({ prompt, ...rest }) {
+  return prompt === undefined ? rest : { ...rest, tagging_prompt: prompt };
+}
 
 // ═══════════════════════════════════════════
 // Main App
@@ -771,15 +744,11 @@ export default function App() {
   // Pipeline state
   const [pipelineStatus, setPipelineStatus] = useState(null);
   const [pipelineProjects, setPipelineProjects] = useState([]);
+  const [loraPresets, setLoraPresets] = useState({});
   const [pipelineForm, setPipelineForm] = useState({
     name: "", description: "", trigger_word: "",
-    tagging_prompt: "Describe this image in detail for AI training. Include the subject, setting, lighting, mood, color palette, composition, and any notable visual elements.",
-    tagging_model: "qwen3-vl:8b",
-    learning_rate: "5e-5", network_dim: 32, network_alpha: 16, max_epochs: 16,
-    save_every_n_epochs: 2, num_repeats: 1, resolution: 1024,
-    enable_samples: false, sample_prompts: [],
+    ...FALLBACK_PIPELINE_DEFAULTS,
     source_type: "selection", source_path: "",
-    dit_model: "qwen_image_bf16.safetensors",
     cache_debug_mode: false,
   });
   const [pipelineLog, setPipelineLog] = useState([]);
@@ -790,9 +759,12 @@ export default function App() {
   const [datasetKeep, setDatasetKeep] = useState({});
   const [datasetLoading, setDatasetLoading] = useState(false);
   const [reviewCollapsed, setReviewCollapsed] = useState(false);
+  const [captionAnalysis, setCaptionAnalysis] = useState(null);
+  const [captionAnalysisBusy, setCaptionAnalysisBusy] = useState(false);
+  const [captionAnalysisTab, setCaptionAnalysisTab] = useState("unigrams");
   const pipelineInterval = useRef(null);
 
-  useEffect(() => { fetchStats(); fetchFilterOptions(); fetchSelectionSummary(); fetchBrowseMovies(1); }, []);
+  useEffect(() => { fetchConfigDefaults(); fetchStats(); fetchFilterOptions(); fetchSelectionSummary(); fetchBrowseMovies(1); }, []);
   useEffect(() => { if (activeTab === "tags") { fetchTopTags(); fetchTaggerStatus(); } }, [activeTab]);
   useEffect(() => {
     const shouldPoll = activeTab === "tags" && taggerStatus?.process_running;
@@ -811,6 +783,19 @@ export default function App() {
       return () => clearInterval(pipelineInterval.current);
     } else { if (pipelineInterval.current) clearInterval(pipelineInterval.current); }
   }, [activeTab]);
+
+  // Seeds the New Project form and the preset buttons from
+  // lora-curator/defaults.toml. On failure the hardcoded fallbacks above stand
+  // in, and the preset row renders empty rather than breaking the page.
+  const fetchConfigDefaults = async () => {
+    try {
+      const r = await fetch(`${API}/config/defaults`);
+      const cfg = await r.json();
+      if (cfg.pipeline) setPipelineForm(p => ({ ...p, ...promptToForm(cfg.pipeline) }));
+      if (cfg.presets) setLoraPresets(cfg.presets);
+      if (cfg.tagger?.model) setTaggerForm(p => ({ ...p, model: cfg.tagger.model }));
+    } catch (e) { console.error("Could not load defaults.toml:", e); }
+  };
 
   const fetchStats = async () => { try { const r = await fetch(`${API}/stats`); setStats(await r.json()); } catch (e) { console.error(e); } };
   const fetchFilterOptions = async () => { try { const r = await fetch(`${API}/filters`); setFilterOptions(await r.json()); } catch (e) { console.error(e); } };
@@ -929,6 +914,7 @@ export default function App() {
       setConfigSaved(false);
       fetchPipelineStatus();
       fetchDatasetImages();
+      fetchCaptionAnalysis();
     } catch (e) { alert("Error: " + e.message); }
   };
   const saveProjectConfig = async () => {
@@ -971,6 +957,24 @@ export default function App() {
   const toggleDatasetKeep = (filename) => {
     setDatasetKeep(prev => ({ ...prev, [filename]: !prev[filename] }));
   };
+  const fetchCaptionAnalysis = async () => {
+    try {
+      const r = await fetch(`${API}/pipeline/caption-analysis?preview=30`);
+      if (!r.ok) { setCaptionAnalysis(null); return; }
+      const j = await r.json();
+      setCaptionAnalysis(j.exists ? j : { exists: false });
+    } catch (e) { setCaptionAnalysis(null); }
+  };
+  const runCaptionAnalysis = async () => {
+    setCaptionAnalysisBusy(true);
+    try {
+      const r = await fetch(`${API}/pipeline/analyze-captions`, { method: "POST" });
+      if (!r.ok) { let msg = "Error"; try { msg = (await r.json()).detail; } catch {} alert(msg); return; }
+      await fetchCaptionAnalysis();
+    } catch (e) { alert("Error: " + e.message); }
+    finally { setCaptionAnalysisBusy(false); }
+  };
+
   const applyDatasetDeletes = async () => {
     const toDelete = datasetImages.map(im => im.filename).filter(fn => datasetKeep[fn] === false);
     if (toDelete.length === 0) { alert("Nothing deselected."); return; }
@@ -1205,10 +1209,10 @@ export default function App() {
                   <div>
                     <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Preset</label>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {Object.entries(LORA_PRESETS).map(([key, preset]) => {
+                      {Object.entries(loraPresets).map(([key, preset]) => {
                         const active = selectedPreset === key;
                         return (
-                          <button key={key} onClick={() => { const { label: _, ...fields } = preset; setPipelineForm(p => ({ ...p, ...fields })); setSelectedPreset(key); }}
+                          <button key={key} onClick={() => { const { label: _, ...fields } = preset; setPipelineForm(p => ({ ...p, ...promptToForm(fields) })); setSelectedPreset(key); }}
                             style={{
                               padding: "5px 12px", borderRadius: 6,
                               border: `1px solid ${active ? theme.accent : theme.border}`,
@@ -1217,7 +1221,7 @@ export default function App() {
                               fontSize: 11, fontWeight: 600,
                               cursor: "pointer", fontFamily: "'DM Sans', sans-serif", letterSpacing: 0.5,
                             }}>
-                            {preset.label}
+                            {preset.label || key}
                           </button>
                         );
                       })}
@@ -1496,6 +1500,85 @@ export default function App() {
 
                 {/* Loss Chart */}
                 <LossChart data={pipelineStatus.loss_data} />
+
+                {/* Caption Analysis (post-training: shared vocabulary across captions for prompt expansion) */}
+                <Section
+                  title={
+                    captionAnalysis?.exists
+                      ? `Caption Analysis · ${captionAnalysis.captions_analyzed}/${captionAnalysis.captions_total} captions · ${captionAnalysis.total_tokens?.toLocaleString?.() || captionAnalysis.total_tokens} tokens`
+                      : "Caption Analysis"
+                  }
+                  actions={
+                    <>
+                      <button onClick={(e) => { e.stopPropagation(); runCaptionAnalysis(); }} disabled={captionAnalysisBusy}
+                        style={{
+                          padding: "5px 12px", borderRadius: 6, border: "none", fontSize: 11, fontWeight: 600,
+                          cursor: captionAnalysisBusy ? "wait" : "pointer",
+                          background: `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})`,
+                          color: "#fff", fontFamily: "'DM Sans', sans-serif",
+                        }}>
+                        {captionAnalysisBusy ? "Analyzing…" : (captionAnalysis?.exists ? "Re-analyze" : "Analyze Captions")}
+                      </button>
+                    </>
+                  }>
+                  {!captionAnalysis?.exists ? (
+                    <div style={{ fontSize: 12, color: theme.textDim, padding: "8px 0" }}>
+                      No analysis yet. Run to scan every <code style={{ fontFamily: "'Space Mono', monospace" }}>.txt</code> caption, strip the trigger word, and write
+                      <code style={{ fontFamily: "'Space Mono', monospace" }}> caption_analysis.json</code> +
+                      <code style={{ fontFamily: "'Space Mono', monospace" }}> caption_analysis.md</code> to the project root.
+                    </div>
+                  ) : (
+                    <div>
+                      <div style={{ fontSize: 11, color: theme.textDim, fontFamily: "'Space Mono', monospace", marginBottom: 10 }}>
+                        Generated {captionAnalysis.generated_at} · trigger stripped: <span style={{ color: theme.accent }}>{captionAnalysis.trigger_word || "(auto)"}</span>
+                        <br />
+                        <span style={{ wordBreak: "break-all" }}>{captionAnalysis.paths?.md}</span>
+                      </div>
+                      <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+                        {[
+                          { id: "unigrams", label: `Unigrams (${captionAnalysis.unigrams?.length || 0})` },
+                          { id: "bigrams", label: `Bigrams (${captionAnalysis.bigrams?.length || 0})` },
+                          { id: "trigrams", label: `Trigrams (${captionAnalysis.trigrams?.length || 0})` },
+                        ].map(t => (
+                          <button key={t.id} onClick={() => setCaptionAnalysisTab(t.id)}
+                            style={{
+                              padding: "5px 12px", borderRadius: 6,
+                              border: `1px solid ${captionAnalysisTab === t.id ? theme.accent : theme.border}`,
+                              background: captionAnalysisTab === t.id ? `${theme.accent}22` : "transparent",
+                              color: captionAnalysisTab === t.id ? theme.accent : theme.textMuted,
+                              fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                            }}>{t.label}</button>
+                        ))}
+                      </div>
+                      <div style={{ maxHeight: 380, overflowY: "auto", border: `1px solid ${theme.border}`, borderRadius: 6 }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ background: theme.surfaceAlt, position: "sticky", top: 0 }}>
+                              <th style={{ padding: "6px 10px", textAlign: "left", color: theme.textDim, fontWeight: 600, fontSize: 10, letterSpacing: 1, textTransform: "uppercase" }}>Term</th>
+                              <th style={{ padding: "6px 10px", textAlign: "right", color: theme.textDim, fontWeight: 600, fontSize: 10, letterSpacing: 1, textTransform: "uppercase" }}>Count</th>
+                              <th style={{ padding: "6px 10px", textAlign: "right", color: theme.textDim, fontWeight: 600, fontSize: 10, letterSpacing: 1, textTransform: "uppercase" }}>Docs</th>
+                              <th style={{ padding: "6px 10px", textAlign: "right", color: theme.textDim, fontWeight: 600, fontSize: 10, letterSpacing: 1, textTransform: "uppercase" }}>Coverage</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(captionAnalysis[captionAnalysisTab] || []).map((row, i) => {
+                              const pct = captionAnalysis.captions_analyzed
+                                ? (row.doc_freq / captionAnalysis.captions_analyzed) * 100 : 0;
+                              return (
+                                <tr key={`${row.term}-${i}`} style={{ borderTop: `1px solid ${theme.border}` }}>
+                                  <td style={{ padding: "5px 10px", color: theme.text, fontFamily: "'Space Mono', monospace" }}>{row.term}</td>
+                                  <td style={{ padding: "5px 10px", textAlign: "right", color: theme.textMuted, fontFamily: "'Space Mono', monospace" }}>{row.count}</td>
+                                  <td style={{ padding: "5px 10px", textAlign: "right", color: theme.textMuted, fontFamily: "'Space Mono', monospace" }}>{row.doc_freq}</td>
+                                  <td style={{ padding: "5px 10px", textAlign: "right", color: pct >= 50 ? theme.accent : theme.textMuted, fontFamily: "'Space Mono', monospace" }}>{pct.toFixed(0)}%</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </Section>
 
                 {/* Log Output */}
                 <Section title="Log Output">
