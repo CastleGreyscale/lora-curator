@@ -27,6 +27,10 @@ class BulkMovieRequest(BaseModel):
 class ToggleImageRequest(BaseModel):
     image_id: int
 
+class BulkImageRequest(BaseModel):
+    image_ids: List[int]
+    included: bool = True
+
 
 # ── Movie browsing with thumbnails ───────────
 
@@ -273,6 +277,14 @@ async def deselect_movies(req: BulkMovieRequest):
 async def toggle_image(req: ToggleImageRequest):
     """Toggle an individual image"""
     return selections.toggle_image(req.image_id)
+
+
+@router.post("/selection/images")
+async def set_images_selection(req: BulkImageRequest):
+    """Include or drop a batch of images (the Tags panel's per-page select all)."""
+    if req.included:
+        return selections.include_images_bulk(req.image_ids)
+    return selections.deselect_images_bulk(req.image_ids)
 
 
 @router.get("/selection/summary")

@@ -400,6 +400,44 @@ function ImageGrid({ images, loading }) {
 }
 
 // ═══════════════════════════════════════════
+// Selectable Image Grid (Movie detail + Tags tab)
+// ═══════════════════════════════════════════
+//
+// Each tile carries its own selection state: `included` is the effective state
+// (movie-level default, or a per-image override) and `has_override` marks the
+// ones that were decided individually.
+
+function SelectableImageGrid({ images, loading, onToggle, minWidth = 180, showMeta = false }) {
+  if (loading) {
+    return (<div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${minWidth}px, 1fr))`, gap: 8 }}>
+      {Array.from({ length: 18 }).map((_, i) => (<div key={i} style={{ aspectRatio: "16/10", borderRadius: 8, background: `linear-gradient(135deg, ${theme.surfaceAlt}, ${theme.bg})`, animation: "pulse 1.5s ease-in-out infinite" }} />))}
+    </div>);
+  }
+  if (!images || images.length === 0) return null;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${minWidth}px, 1fr))`, gap: 8 }}>
+      {images.map(img => (
+        <div key={img.id} style={{ position: "relative", borderRadius: 8, overflow: "hidden", background: theme.bg, border: `1px solid ${img.included ? theme.selectedBorder : theme.border}`, transition: "all 0.15s" }}>
+          <img src={`${API}/image/serve/${img.id}`} alt={img.filename} loading="lazy"
+            style={{ width: "100%", aspectRatio: "16/10", objectFit: "cover", display: "block", cursor: "pointer" }}
+            onClick={() => onToggle(img.id)} />
+          <div style={{ position: "absolute", top: 6, left: 6 }}>
+            <Checkbox checked={img.included} onChange={() => onToggle(img.id)} size={18} color={img.included ? theme.selected : theme.danger} />
+          </div>
+          {img.has_override && (<div style={{ position: "absolute", top: 6, right: 6, width: 8, height: 8, borderRadius: "50%", background: img.included ? theme.selected : theme.danger }} />)}
+          {showMeta && img.movie_title && (
+            <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,0.85))", padding: "18px 8px 6px", pointerEvents: "none" }}>
+              <div style={{ fontSize: 10, color: "#fff", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{img.movie_title}</div>
+              <div style={{ fontSize: 9, color: "rgba(255,255,255,0.5)", fontFamily: "'Space Mono', monospace" }}>{img.movie_year || "?"} · {img.aspect_ratio_group || "?"}</div>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
 // Charts
 // ═══════════════════════════════════════════
 
@@ -564,18 +602,7 @@ function MovieDetailView({ movieId, onBack, onSelectionChange, onDataUpdate }) {
           <span style={{ fontSize: 12, color: movieSelected ? theme.selected : theme.textDim, fontWeight: 600, marginLeft: "auto" }}>{movieSelected ? "✓ Selected" : "Not selected"} · {data.total} frames</span>
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
-        {data.images.map(img => {
-          const included = img.included; const hasOverride = img.has_override;
-          return (
-            <div key={img.id} style={{ position: "relative", borderRadius: 8, overflow: "hidden", border: `1px solid ${included ? theme.selectedBorder : theme.border}`, transition: "all 0.15s" }}>
-              <img src={`${API}/image/serve/${img.id}`} alt={img.filename} loading="lazy" style={{ width: "100%", aspectRatio: "16/10", objectFit: "cover", display: "block", cursor: "pointer" }} onClick={() => toggleImage(img.id)} />
-              <div style={{ position: "absolute", top: 6, left: 6 }}><Checkbox checked={included} onChange={() => toggleImage(img.id)} size={18} color={included ? theme.selected : theme.danger} /></div>
-              {hasOverride && (<div style={{ position: "absolute", top: 6, right: 6, width: 8, height: 8, borderRadius: "50%", background: included ? theme.selected : theme.danger }} />)}
-            </div>
-          );
-        })}
-      </div>
+      <SelectableImageGrid images={data.images} onToggle={toggleImage} />
     </div>
   );
 }
@@ -679,12 +706,119 @@ function BrowseFooter({
 }
 
 // ═══════════════════════════════════════════
+// Tags Footer (pinned) — paging + bulk picks + hand-off to the pipeline
+// ═══════════════════════════════════════════
+
+function TagsFooter({
+  summary, total, page, totalPages, hasResults, busy,
+  onPageChange, onSelectPage, onDeselectPage, onSelectAll, onDeselectAll,
+  onClear, onCreateDataset,
+}) {
+  const hasSelection = summary && (summary.selected_movies > 0 || summary.force_included_images > 0);
+  return (
+    <div style={{
+      position: "fixed", bottom: 0, left: 0, right: 0, padding: "8px 24px",
+      display: "flex", alignItems: "center", gap: 12,
+      background: theme.surface, borderTop: `1px solid ${theme.border}`, zIndex: 100,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button onClick={onSelectPage} disabled={!hasResults || busy}
+          style={footerBtn({ border: `1px solid ${theme.selectedBorder}`, background: "transparent", color: theme.selected, opacity: hasResults ? 1 : 0.4 })}>+ Page</button>
+        <button onClick={onDeselectPage} disabled={!hasResults || busy}
+          style={footerBtn({ border: `1px solid ${theme.border}`, background: "transparent", color: theme.textMuted, opacity: hasResults ? 1 : 0.4 })}>− Page</button>
+        <button onClick={onSelectAll} disabled={!hasResults || busy}
+          style={footerBtn({ border: "none", background: hasResults ? theme.successDim : theme.surfaceAlt, color: hasResults ? theme.selected : theme.textDim })}>
+          + All {total > 0 ? total.toLocaleString() : ""}
+        </button>
+        <button onClick={onDeselectAll} disabled={!hasResults || busy}
+          style={footerBtn({ border: `1px solid ${theme.border}`, background: "transparent", color: theme.textMuted, opacity: hasResults ? 1 : 0.4 })}>− All</button>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        {totalPages > 1 && (<>
+          <button onClick={() => onPageChange(page - 1)} disabled={page <= 1 || busy}
+            style={footerBtn({ border: `1px solid ${theme.border}`, background: "transparent", color: page <= 1 ? theme.textDim : theme.textMuted, opacity: page <= 1 ? 0.4 : 1 })}>◀</button>
+          <span style={{ fontSize: 12, color: theme.textDim, fontFamily: "'Space Mono', monospace", minWidth: 60, textAlign: "center" }}>{page}/{totalPages}</span>
+          <button onClick={() => onPageChange(page + 1)} disabled={page >= totalPages || busy}
+            style={footerBtn({ border: `1px solid ${theme.border}`, background: "transparent", color: page >= totalPages ? theme.textDim : theme.textMuted, opacity: page >= totalPages ? 0.4 : 1 })}>▶</button>
+        </>)}
+      </div>
+
+      <div style={{ flex: 1 }} />
+
+      {summary && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: hasSelection ? theme.selected : theme.textDim }} />
+            <span style={{ fontSize: 12, color: theme.textMuted, fontFamily: "'Space Mono', monospace" }}>
+              <span style={{ color: theme.accent, fontWeight: 600 }}>{summary.total_images.toLocaleString()}</span> in selection
+              {summary.force_included_images > 0 && <span style={{ color: theme.selected, marginLeft: 6 }}>+{summary.force_included_images.toLocaleString()} picked</span>}
+            </span>
+          </div>
+          {hasSelection && (
+            <button onClick={onClear} style={footerBtn({ border: `1px solid ${theme.dangerDim}`, background: "transparent", color: theme.danger })}>Clear</button>
+          )}
+          <button onClick={onCreateDataset} disabled={!hasSelection}
+            style={footerBtn({ border: "none", background: hasSelection ? `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})` : theme.surfaceAlt, color: hasSelection ? "#fff" : theme.textDim, cursor: hasSelection ? "pointer" : "default" })}>
+            Save as Dataset →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
+// Create Dataset dialog — exports the current selection into a LoRA project
+// ═══════════════════════════════════════════
+
+function CreateDatasetModal({ summary, form, setForm, busy, onCancel, onCreate }) {
+  return (
+    <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 420, background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: 22 }}>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: theme.text }}>Save Selection as Dataset</h3>
+        <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 6, marginBottom: 16, fontFamily: "'Space Mono', monospace" }}>
+          <span style={{ color: theme.accent, fontWeight: 700 }}>{summary?.total_images?.toLocaleString() || 0}</span> images will be copied into a new project.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div>
+            <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Project Name *</label>
+            <input autoFocus value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value.replace(/[^a-zA-Z0-9_-]/g, "_") }))}
+              placeholder="noir_style"
+              style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 13, fontFamily: "'Space Mono', monospace", boxSizing: "border-box" }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Trigger Word</label>
+            <input value={form.trigger_word} onChange={e => setForm(f => ({ ...f, trigger_word: e.target.value }))}
+              placeholder="noir_style"
+              style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 13, boxSizing: "border-box" }} />
+          </div>
+          <div style={{ fontSize: 11, color: theme.textDim, lineHeight: 1.5 }}>
+            Training params come from the defaults — tune them on the Pipeline tab, which opens once the export finishes.
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+          <button onClick={onCancel} style={footerBtn({ border: `1px solid ${theme.border}`, background: "transparent", color: theme.textMuted })}>Cancel</button>
+          <button onClick={onCreate} disabled={busy || !form.name.trim()}
+            style={footerBtn({ border: "none", background: (busy || !form.name.trim()) ? theme.surfaceAlt : `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})`, color: (busy || !form.name.trim()) ? theme.textDim : "#fff" })}>
+            {busy ? "Exporting…" : "Create Dataset"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
 // Defaults & presets — see lora-curator/defaults.toml
 // ═══════════════════════════════════════════
 //
 // Prompts, form defaults and training presets all live in that file and are
 // fetched from /api/config/defaults on mount. Edit the TOML and reload the
 // page — nothing here needs changing to add a preset or reword a prompt.
+
+// Images per page in the Tags panel (the API caps a page at 200).
+const TAG_PER_PAGE = 100;
 
 // Only used if the fetch fails, so the form is never empty.
 const FALLBACK_PIPELINE_DEFAULTS = {
@@ -736,6 +870,12 @@ export default function App() {
   const [tagExclude, setTagExclude] = useState([]);
   const [tagImages, setTagImages] = useState([]);
   const [tagImagesLoading, setTagImagesLoading] = useState(false);
+  const [tagPage, setTagPage] = useState(1);
+  const [tagTotal, setTagTotal] = useState(0);
+  const [tagTotalPages, setTagTotalPages] = useState(1);
+  const [tagSearched, setTagSearched] = useState(false);
+  const [tagBulkBusy, setTagBulkBusy] = useState(false);
+  const [datasetModal, setDatasetModal] = useState(null);
   const [taggerStatus, setTaggerStatus] = useState(null);
   const [taggerForm, setTaggerForm] = useState({ model: "qwen3-vl:8b", batch_size: 500 });
   const [taggerBusy, setTaggerBusy] = useState(false);
@@ -765,7 +905,7 @@ export default function App() {
   const pipelineInterval = useRef(null);
 
   useEffect(() => { fetchConfigDefaults(); fetchStats(); fetchFilterOptions(); fetchSelectionSummary(); fetchBrowseMovies(1); }, []);
-  useEffect(() => { if (activeTab === "tags") { fetchTopTags(); fetchTaggerStatus(); } }, [activeTab]);
+  useEffect(() => { if (activeTab === "tags") { fetchTopTags(); fetchTaggerStatus(); fetchSelectionSummary(); } }, [activeTab]);
   useEffect(() => {
     const shouldPoll = activeTab === "tags" && taggerStatus?.process_running;
     if (shouldPoll && !taggerInterval.current) {
@@ -853,7 +993,91 @@ export default function App() {
   const clearFilters = () => { setFilters({}); setResults(null); setSampleImages([]); };
   const fetchTopTags = async () => { try { const r = await fetch(`${API}/tags/top?limit=150`); setTopTags(await r.json()); } catch (e) {} };
   const searchTags = async (query) => { setTagSearch(query); if (!query.trim()) { setTagSearchResults([]); return; } try { const r = await fetch(`${API}/tags/search?q=${encodeURIComponent(query)}&limit=30`); setTagSearchResults(await r.json()); } catch (e) {} };
-  const fetchTagImages = async () => { if (tagInclude.length === 0 && tagExclude.length === 0) return; setTagImagesLoading(true); try { const r = await fetch(`${API}/images/filter-by-tags`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ include_tags: tagInclude, exclude_tags: tagExclude, count: 48 }) }); setTagImages(await r.json()); } catch (e) {} finally { setTagImagesLoading(false); } };
+  // Tag results are browsed the same way as a movie's frames: the full matching
+  // set, one page at a time, each tile toggling the shared selection.
+  const fetchTagImages = useCallback(async (page = 1) => {
+    if (tagInclude.length === 0 && tagExclude.length === 0) return;
+    setTagImagesLoading(true);
+    try {
+      const r = await fetch(`${API}/images/by-tags`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ include_tags: tagInclude, exclude_tags: tagExclude, page, per_page: TAG_PER_PAGE }),
+      });
+      if (!r.ok) { let msg = `Error ${r.status}`; try { msg = (await r.json()).detail || msg; } catch {} alert(msg); return; }
+      const j = await r.json();
+      setTagImages(j.images); setTagTotal(j.total); setTagTotalPages(j.total_pages); setTagPage(j.page);
+      setTagSearched(true);
+    } catch (e) { console.error(e); }
+    finally { setTagImagesLoading(false); }
+  }, [tagInclude, tagExclude]);
+
+  const toggleTagImage = async (imageId) => {
+    try {
+      const r = await fetch(`${API}/selection/toggle-image`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_id: imageId }) });
+      const j = await r.json();
+      setTagImages(prev => prev.map(im => im.id === imageId
+        ? { ...im, included: j.included, has_override: j.included !== im.movie_selected }
+        : im));
+      fetchSelectionSummary();
+    } catch (e) { console.error(e); }
+  };
+
+  // Whole visible page — cheap, so the tiles are updated in place.
+  const setTagPageSelection = async (included) => {
+    const imageIds = tagImages.map(im => im.id);
+    if (imageIds.length === 0) return;
+    setTagBulkBusy(true);
+    try {
+      await fetch(`${API}/selection/images`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_ids: imageIds, included }) });
+      setTagImages(prev => prev.map(im => ({ ...im, included, has_override: included !== im.movie_selected })));
+      fetchSelectionSummary();
+    } catch (e) { alert("Error: " + e.message); }
+    finally { setTagBulkBusy(false); }
+  };
+
+  // Every image matching the current tags, not just the page on screen.
+  const setTagMatchSelection = async (included) => {
+    if (included && tagTotal > 1000 && !confirm(`Add all ${tagTotal.toLocaleString()} matching images to the selection?`)) return;
+    setTagBulkBusy(true);
+    try {
+      const r = await fetch(`${API}/selection/by-tags`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ include_tags: tagInclude, exclude_tags: tagExclude, included }) });
+      if (!r.ok) { let msg = `Error ${r.status}`; try { msg = (await r.json()).detail || msg; } catch {} alert(msg); return; }
+      await r.json();
+      fetchSelectionSummary();
+      await fetchTagImages(tagPage);
+    } catch (e) { alert("Error: " + e.message); }
+    finally { setTagBulkBusy(false); }
+  };
+
+  // Hands the selection to the pipeline: same export the Browse tab performs,
+  // with the training params coming from defaults.toml.
+  const createDatasetFromSelection = async () => {
+    const name = datasetModal.name.trim();
+    if (!name) return;
+    setDatasetModal(m => ({ ...m, busy: true }));
+    try {
+      const r = await fetch(`${API}/pipeline/create`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...pipelineForm, name, trigger_word: datasetModal.trigger_word }),
+      });
+      if (!r.ok) {
+        let msg = `Error ${r.status}`;
+        try { msg = (await r.json()).detail || msg; } catch {}
+        alert(msg);
+        setDatasetModal(m => m && ({ ...m, busy: false }));
+        return;
+      }
+      const j = await r.json();
+      setPipelineForm(p => ({ ...p, name, trigger_word: datasetModal.trigger_word }));
+      setDatasetModal(null);
+      setActiveTab("pipeline");
+      fetchPipelineStatus(); fetchPipelineProjects(); fetchDatasetImages();
+      alert(`Created "${name}" — ${j.images_exported} images exported${j.errors ? `, ${j.errors} errors` : ""}.`);
+    } catch (e) {
+      alert("Error: " + e.message);
+      setDatasetModal(m => m && ({ ...m, busy: false }));
+    }
+  };
   const fetchTaggerStatus = async () => { try { const r = await fetch(`${API}/tagger/status`); setTaggerStatus(await r.json()); } catch (e) {} };
   const startTagger = async () => {
     setTaggerBusy(true);
@@ -1028,7 +1252,7 @@ export default function App() {
       </nav>
 
       {/* Main Content */}
-      <main style={{ padding: 32, paddingBottom: activeTab === "browse" ? 80 : 32 }}>
+      <main style={{ padding: 32, paddingBottom: (activeTab === "browse" || activeTab === "tags") ? 80 : 32 }}>
         <Section title="Scan Dataset" collapsed={scanCollapsed} onToggle={() => setScanCollapsed(!scanCollapsed)}>
           <ScanPanel onScanComplete={() => { fetchStats(); fetchFilterOptions(); fetchBrowseMovies(1); }} />
         </Section>
@@ -1149,22 +1373,28 @@ export default function App() {
                   </div>
                 </div>
                 <div style={{ position: "sticky", bottom: 0, paddingTop: 12, paddingBottom: 4, background: `linear-gradient(transparent, ${theme.surface} 20%)` }}>
-                  <button onClick={fetchTagImages} disabled={tagInclude.length === 0 && tagExclude.length === 0}
+                  <button onClick={() => fetchTagImages(1)} disabled={tagInclude.length === 0 && tagExclude.length === 0}
                     style={{ width: "100%", padding: "10px 20px", borderRadius: 8, border: "none", background: (tagInclude.length > 0 || tagExclude.length > 0) ? `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})` : theme.surfaceAlt, color: (tagInclude.length > 0 || tagExclude.length > 0) ? "white" : theme.textDim, fontSize: 13, fontWeight: 600, cursor: (tagInclude.length > 0 || tagExclude.length > 0) ? "pointer" : "default", fontFamily: "'DM Sans', sans-serif", letterSpacing: 0.5 }}>Search by Tags</button>
                 </div>
               </Section>
             </div>
             <div>
-              {tagImages.length > 0 && (<div style={{ marginBottom: 12, fontSize: 12, color: theme.textMuted, fontFamily: "'Space Mono', monospace" }}>
-                {tagImages.length} images<span style={{ color: theme.textDim, margin: "0 6px" }}>·</span>{new Set(tagImages.map(i => i.movie_id)).size} movies
+              {tagSearched && (<div style={{ marginBottom: 12, fontSize: 12, color: theme.textMuted, fontFamily: "'Space Mono', monospace" }}>
+                <span style={{ color: theme.accent, fontWeight: 700 }}>{tagTotal.toLocaleString()}</span> images
+                {tagTotalPages > 1 && (<><span style={{ color: theme.textDim, margin: "0 6px" }}>·</span>showing {((tagPage - 1) * TAG_PER_PAGE + 1).toLocaleString()}–{Math.min(tagPage * TAG_PER_PAGE, tagTotal).toLocaleString()}</>)}
                 {tagInclude.length > 0 && (<span style={{ color: theme.success, marginLeft: 8 }}>+{tagInclude.join(", +")}</span>)}
                 {tagExclude.length > 0 && (<span style={{ color: theme.danger, marginLeft: 8 }}>−{tagExclude.join(", −")}</span>)}
               </div>)}
-              <ImageGrid images={tagImages} loading={tagImagesLoading} />
+              <SelectableImageGrid images={tagImages} loading={tagImagesLoading} onToggle={toggleTagImage} showMeta />
               {tagImages.length === 0 && !tagImagesLoading && (<div style={{ textAlign: "center", padding: 60, color: theme.textDim }}>
                 <div style={{ fontSize: 36, marginBottom: 12, opacity: 0.3 }}>🏷</div>
-                <div style={{ fontSize: 14, marginBottom: 8 }}>Select tags and click "Search by Tags"</div>
-                <div style={{ fontSize: 12 }}>Click a tag to include it · Shift+click to exclude</div>
+                {tagSearched ? (<>
+                  <div style={{ fontSize: 14, marginBottom: 8 }}>No images match these tags</div>
+                  <div style={{ fontSize: 12 }}>Tags match exactly — try a broader one from the list</div>
+                </>) : (<>
+                  <div style={{ fontSize: 14, marginBottom: 8 }}>Select tags and click "Search by Tags"</div>
+                  <div style={{ fontSize: 12 }}>Click a tag to include it · Shift+click to exclude</div>
+                </>)}
               </div>)}
             </div>
           </div>
@@ -1634,6 +1864,35 @@ export default function App() {
           browsePage={browseCurrentPage}
           browseTotalPages={browseTotalPages}
           onBrowsePageChange={fetchBrowseMovies}
+        />
+      )}
+
+      {activeTab === "tags" && (
+        <TagsFooter
+          summary={selectionSummary}
+          total={tagTotal}
+          page={tagPage}
+          totalPages={tagTotalPages}
+          hasResults={tagImages.length > 0}
+          busy={tagBulkBusy}
+          onPageChange={fetchTagImages}
+          onSelectPage={() => setTagPageSelection(true)}
+          onDeselectPage={() => setTagPageSelection(false)}
+          onSelectAll={() => setTagMatchSelection(true)}
+          onDeselectAll={() => setTagMatchSelection(false)}
+          onClear={async () => { await handleClearAll(); if (tagSearched) fetchTagImages(tagPage); }}
+          onCreateDataset={() => setDatasetModal({ name: "", trigger_word: "", busy: false })}
+        />
+      )}
+
+      {datasetModal && (
+        <CreateDatasetModal
+          summary={selectionSummary}
+          form={datasetModal}
+          setForm={setDatasetModal}
+          busy={datasetModal.busy}
+          onCancel={() => { if (!datasetModal.busy) setDatasetModal(null); }}
+          onCreate={createDatasetFromSelection}
         />
       )}
     </div>

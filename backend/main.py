@@ -25,6 +25,8 @@ from database import (
     init_db, scan_dataset_root, get_filter_options, filter_movies,
     get_random_images, get_db_stats, get_db, DB_PATH
 )
+import selections
+import tag_queries
 
 
 
@@ -51,7 +53,6 @@ scan_status = {
 async def lifespan(app: FastAPI):
     """Initialize DB on startup"""
     init_db()
-    import selections
     selections.init_selection_tables()
     yield
 
@@ -584,55 +585,48 @@ async def top_tags(limit: int = 100):
         return [dict(r) for r in rows]
 
 
-@app.post("/api/images/filter-by-tags")
-async def filter_images_by_tags(
-    include_tags: list[str] = [],
-    exclude_tags: list[str] = [],
-    count: int = 24,
-):
-    """Get random images that have specific tags (and don't have excluded tags)."""
-    with get_db() as conn:
-        if not include_tags and not exclude_tags:
-            raise HTTPException(400, "Provide at least one include or exclude tag")
+class TagFilterRequest(BaseModel):
+    include_tags: list[str] = []
+    exclude_tags: list[str] = []
+    page: int = 1
+    per_page: int = 100
 
-        conditions = []
-        params = []
 
-        # Images must have ALL include tags
-        if include_tags:
-            for tag in include_tags:
-                conditions.append(
-                    """i.id IN (
-                        SELECT image_id FROM image_tags WHERE tag LIKE ?
-                    )"""
-                )
-                params.append(f"%{tag}%")
+class TagSelectionRequest(BaseModel):
+    include_tags: list[str] = []
+    exclude_tags: list[str] = []
+    included: bool = True
 
-        # Images must NOT have any exclude tags
-        if exclude_tags:
-            for tag in exclude_tags:
-                conditions.append(
-                    """i.id NOT IN (
-                        SELECT image_id FROM image_tags WHERE tag LIKE ?
-                    )"""
-                )
-                params.append(f"%{tag}%")
 
-        where = " AND ".join(conditions)
-        params.append(count)
+@app.post("/api/images/by-tags")
+async def images_by_tags(req: TagFilterRequest):
+    """A page of every image matching the tag filter, with selection state.
 
-        rows = conn.execute(
-            f"""SELECT i.*, m.title as movie_title, m.year as movie_year,
-                       m.aspect_ratio_group
-                FROM images i
-                JOIN movies m ON i.movie_id = m.id
-                WHERE {where}
-                ORDER BY RANDOM()
-                LIMIT ?""",
-            params
-        ).fetchall()
+    Replaces the old random-sample endpoint: the Tags panel browses the full
+    matching set the same way Browse & Select pages through a movie.
+    """
+    try:
+        return tag_queries.page_images(
+            req.include_tags, req.exclude_tags, req.page, req.per_page
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
-        return [dict(r) for r in rows]
+
+@app.post("/api/selection/by-tags")
+async def select_images_by_tags(req: TagSelectionRequest):
+    """Add (or drop) every image matching the tag filter to/from the selection."""
+    try:
+        image_ids = tag_queries.matched_image_ids(req.include_tags, req.exclude_tags)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    summary = (
+        selections.include_images_bulk(image_ids)
+        if req.included
+        else selections.deselect_images_bulk(image_ids)
+    )
+    return {"matched": len(image_ids), **summary}
 
 
 # ──────────────────────────────────────────────

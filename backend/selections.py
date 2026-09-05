@@ -151,6 +151,54 @@ def toggle_image(image_id: int) -> dict:
     return {"image_id": image_id, "included": new_state}
 
 
+def _chunked(items, size=500):
+    """Split an id list so a bulk statement never blows the SQLite variable limit."""
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def include_images_bulk(image_ids: list) -> dict:
+    """Force-include images regardless of their movie's state.
+
+    This is how the Tags panel adds a tag-filtered set to the selection.
+    """
+    now = datetime.now().isoformat()
+    with get_db() as conn:
+        for chunk in _chunked(list(image_ids)):
+            conn.executemany(
+                "INSERT OR REPLACE INTO image_overrides (image_id, included, updated_at) VALUES (?, 1, ?)",
+                [(image_id, now) for image_id in chunk],
+            )
+    return get_selection_summary()
+
+
+def deselect_images_bulk(image_ids: list) -> dict:
+    """Drop images from the selection.
+
+    An image inside a selected movie needs an explicit exclude override to come
+    out; one that was only ever force-included just loses its override, so we
+    don't leave dead rows behind.
+    """
+    now = datetime.now().isoformat()
+    with get_db() as conn:
+        for chunk in _chunked(list(image_ids)):
+            placeholders = ','.join(['?'] * len(chunk))
+            conn.execute(f"""
+                INSERT OR REPLACE INTO image_overrides (image_id, included, updated_at)
+                SELECT i.id, 0, ? FROM images i
+                WHERE i.id IN ({placeholders})
+                AND i.movie_id IN (SELECT movie_id FROM selected_movies)
+            """, [now] + chunk)
+            conn.execute(f"""
+                DELETE FROM image_overrides WHERE image_id IN (
+                    SELECT i.id FROM images i
+                    WHERE i.id IN ({placeholders})
+                    AND i.movie_id NOT IN (SELECT movie_id FROM selected_movies)
+                )
+            """, chunk)
+    return get_selection_summary()
+
+
 def exclude_image(image_id: int) -> dict:
     """Exclude a specific image (even if its movie is selected)"""
     now = datetime.now().isoformat()
