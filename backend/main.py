@@ -588,6 +588,7 @@ async def top_tags(limit: int = 100):
 class TagFilterRequest(BaseModel):
     include_tags: list[str] = []
     exclude_tags: list[str] = []
+    aspect_groups: list[str] = []
     page: int = 1
     per_page: int = 100
 
@@ -595,7 +596,14 @@ class TagFilterRequest(BaseModel):
 class TagSelectionRequest(BaseModel):
     include_tags: list[str] = []
     exclude_tags: list[str] = []
+    aspect_groups: list[str] = []
     included: bool = True
+
+
+class TagEditRequest(BaseModel):
+    image_ids: list[int] = []
+    add_tags: list[str] = []
+    remove_tags: list[str] = []
 
 
 @app.post("/api/images/by-tags")
@@ -607,8 +615,23 @@ async def images_by_tags(req: TagFilterRequest):
     """
     try:
         return tag_queries.page_images(
-            req.include_tags, req.exclude_tags, req.page, req.per_page
+            req.include_tags, req.exclude_tags, req.page, req.per_page,
+            aspect_groups=req.aspect_groups,
         )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/tags/edit")
+async def edit_tags(req: TagEditRequest):
+    """Reclassify tags by hand on a hand-picked set of images.
+
+    The vision model can't reliably separate neighbouring shot sizes (close-up
+    vs. extreme close-up), so the Tags panel lets you pick the frames it got
+    wrong and swap the tag on all of them at once.
+    """
+    try:
+        return tag_queries.edit_tags(req.image_ids, req.add_tags, req.remove_tags)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -617,7 +640,9 @@ async def images_by_tags(req: TagFilterRequest):
 async def select_images_by_tags(req: TagSelectionRequest):
     """Add (or drop) every image matching the tag filter to/from the selection."""
     try:
-        image_ids = tag_queries.matched_image_ids(req.include_tags, req.exclude_tags)
+        image_ids = tag_queries.matched_image_ids(
+            req.include_tags, req.exclude_tags, aspect_groups=req.aspect_groups
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
 

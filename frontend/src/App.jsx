@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as Recharts from "recharts";
 
 // In dev, Vite proxies /api to :8042. In prod, same origin.
@@ -406,8 +406,23 @@ function ImageGrid({ images, loading }) {
 // Each tile carries its own selection state: `included` is the effective state
 // (movie-level default, or a per-image override) and `has_override` marks the
 // ones that were decided individually.
+//
+// In `pickMode` the tiles stop touching the dataset selection and become a
+// scratch multi-select instead (used by the Tags panel to gather the frames a
+// tag edit applies to). Click toggles one, shift+click takes the range from the
+// last tile clicked.
 
-function SelectableImageGrid({ images, loading, onToggle, minWidth = 180, showMeta = false }) {
+function SelectableImageGrid({
+  images, loading, onToggle, minWidth = 180, showMeta = false,
+  pickMode = false, picked = null, onPick = null, showTags = false, priorityTags = [],
+}) {
+  // A tile only has room for a handful of tags. Float the ones the current
+  // filter and edit are about to the front, so a reclassification is visibly
+  // right there on the frame instead of buried in the overflow count.
+  const rank = new Map(priorityTags.map((tag, i) => [tag, i]));
+  const rankOf = (tag) => (rank.has(tag) ? rank.get(tag) : priorityTags.length);
+  const orderTags = (tags) => (rank.size === 0 ? tags : [...tags].sort((a, b) => rankOf(a) - rankOf(b)));
+
   if (loading) {
     return (<div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${minWidth}px, 1fr))`, gap: 8 }}>
       {Array.from({ length: 18 }).map((_, i) => (<div key={i} style={{ aspectRatio: "16/10", borderRadius: 8, background: `linear-gradient(135deg, ${theme.surfaceAlt}, ${theme.bg})`, animation: "pulse 1.5s ease-in-out infinite" }} />))}
@@ -416,23 +431,46 @@ function SelectableImageGrid({ images, loading, onToggle, minWidth = 180, showMe
   if (!images || images.length === 0) return null;
   return (
     <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${minWidth}px, 1fr))`, gap: 8 }}>
-      {images.map(img => (
-        <div key={img.id} style={{ position: "relative", borderRadius: 8, overflow: "hidden", background: theme.bg, border: `1px solid ${img.included ? theme.selectedBorder : theme.border}`, transition: "all 0.15s" }}>
-          <img src={`${API}/image/serve/${img.id}`} alt={img.filename} loading="lazy"
-            style={{ width: "100%", aspectRatio: "16/10", objectFit: "cover", display: "block", cursor: "pointer" }}
-            onClick={() => onToggle(img.id)} />
-          <div style={{ position: "absolute", top: 6, left: 6 }}>
-            <Checkbox checked={img.included} onChange={() => onToggle(img.id)} size={18} color={img.included ? theme.selected : theme.danger} />
-          </div>
-          {img.has_override && (<div style={{ position: "absolute", top: 6, right: 6, width: 8, height: 8, borderRadius: "50%", background: img.included ? theme.selected : theme.danger }} />)}
-          {showMeta && img.movie_title && (
-            <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,0.85))", padding: "18px 8px 6px", pointerEvents: "none" }}>
-              <div style={{ fontSize: 10, color: "#fff", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{img.movie_title}</div>
-              <div style={{ fontSize: 9, color: "rgba(255,255,255,0.5)", fontFamily: "'Space Mono', monospace" }}>{img.movie_year || "?"} · {img.aspect_ratio_group || "?"}</div>
+      {images.map((img, i) => {
+        const isPicked = pickMode && picked?.has(img.id);
+        const borderColor = pickMode
+          ? (isPicked ? theme.accent : theme.border)
+          : (img.included ? theme.selectedBorder : theme.border);
+        const handleClick = pickMode ? (e) => onPick(img.id, i, e.shiftKey) : () => onToggle(img.id);
+        return (
+          <div key={img.id} style={{ borderRadius: 8, overflow: "hidden", background: theme.bg, border: `1px solid ${borderColor}`, boxShadow: isPicked ? `0 0 0 2px ${theme.accent}` : "none", transition: "all 0.15s" }}>
+            <div style={{ position: "relative" }}>
+              <img src={`${API}/image/serve/${img.id}`} alt={img.filename} loading="lazy"
+                title={img.tags?.length ? img.tags.join(", ") : img.filename}
+                style={{ width: "100%", aspectRatio: "16/10", objectFit: "cover", display: "block", cursor: "pointer", userSelect: "none", opacity: pickMode && !isPicked ? 0.72 : 1 }}
+                onClick={handleClick} />
+              <div style={{ position: "absolute", top: 6, left: 6 }}>
+                {pickMode ? (
+                  <Checkbox checked={!!isPicked} onChange={() => onPick(img.id, i, false)} size={18} color={theme.accent} />
+                ) : (
+                  <Checkbox checked={img.included} onChange={() => onToggle(img.id)} size={18} color={img.included ? theme.selected : theme.danger} />
+                )}
+              </div>
+              {!pickMode && img.has_override && (<div style={{ position: "absolute", top: 6, right: 6, width: 8, height: 8, borderRadius: "50%", background: img.included ? theme.selected : theme.danger }} />)}
+              {pickMode && img.included && (<div title="In the dataset selection" style={{ position: "absolute", top: 6, right: 6, width: 8, height: 8, borderRadius: "50%", background: theme.selected }} />)}
+              {showMeta && img.movie_title && (
+                <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,0.85))", padding: "18px 8px 6px", pointerEvents: "none" }}>
+                  <div style={{ fontSize: 10, color: "#fff", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{img.movie_title}</div>
+                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.5)", fontFamily: "'Space Mono', monospace" }}>{img.movie_year || "?"} · {img.aspect_ratio_group || "?"}</div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      ))}
+            {showTags && (
+              <div style={{ padding: "5px 6px", display: "flex", flexWrap: "wrap", gap: 3, minHeight: 18, background: theme.surface, borderTop: `1px solid ${theme.border}` }}>
+                {orderTags(img.tags || []).slice(0, 6).map(tag => (
+                  <span key={tag} style={{ fontSize: 9, lineHeight: 1.4, padding: "1px 4px", borderRadius: 3, background: rank.has(tag) ? `${theme.accent}22` : theme.surfaceAlt, color: rank.has(tag) ? theme.accent : theme.textMuted, whiteSpace: "nowrap" }}>{tag}</span>
+                ))}
+                {(img.tags?.length || 0) > 6 && <span style={{ fontSize: 9, lineHeight: 1.6, color: theme.textDim }}>+{img.tags.length - 6}</span>}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -769,6 +807,81 @@ function TagsFooter({
 }
 
 // ═══════════════════════════════════════════
+// Reclassify panel — hand-fixing tags the model got wrong
+// ═══════════════════════════════════════════
+//
+// The tagger can't reliably separate neighbouring shot sizes (close-up vs.
+// extreme close-up), so this pins a picked set of frames and swaps a tag on all
+// of them at once. `fromOptions` is built from the tags actually present on the
+// picked frames, so the "from" side can only name a tag that is really there.
+
+function ReclassifyPanel({
+  pickedCount, fromOptions, allTags, from, setFrom, to, setTo,
+  busy, status, onSelectPage, onSelectNone, onInvert, onApply, onExit,
+}) {
+  const btn = (extra, enabled = true) => footerBtn({
+    border: "none", opacity: enabled ? 1 : 0.4,
+    cursor: enabled ? "pointer" : "default", ...extra,
+  });
+  const canReplace = pickedCount > 0 && from && to.trim() && !busy;
+  const canAdd = pickedCount > 0 && to.trim() && !busy;
+  const canRemove = pickedCount > 0 && from && !busy;
+
+  return (
+    <div style={{ background: theme.surface, border: `1px solid ${theme.accent}55`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: theme.accent }}>✎ Reclassify</span>
+        <span style={{ fontSize: 12, color: theme.textMuted, fontFamily: "'Space Mono', monospace" }}>
+          <span style={{ color: pickedCount ? theme.accent : theme.textDim, fontWeight: 700 }}>{pickedCount}</span> picked
+        </span>
+        <button onClick={onSelectPage} style={footerBtn({ border: `1px solid ${theme.border}`, background: "transparent", color: theme.textMuted })}>Pick page</button>
+        <button onClick={onInvert} style={footerBtn({ border: `1px solid ${theme.border}`, background: "transparent", color: theme.textMuted })}>Invert</button>
+        <button onClick={onSelectNone} disabled={!pickedCount} style={footerBtn({ border: `1px solid ${theme.border}`, background: "transparent", color: theme.textMuted, opacity: pickedCount ? 1 : 0.4 })}>Pick none</button>
+        <span style={{ fontSize: 11, color: theme.textDim }}>click a frame to pick · shift+click for a range</span>
+        <div style={{ flex: 1 }} />
+        <button onClick={onExit} style={footerBtn({ border: `1px solid ${theme.border}`, background: "transparent", color: theme.textMuted })}>Done</button>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <label style={{ fontSize: 10, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>From tag</label>
+          <select value={from} onChange={e => setFrom(e.target.value)}
+            style={{ minWidth: 190, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
+            <option value="">— choose a tag —</option>
+            {/* Keep a chosen tag selectable even after the pick set narrows past it. */}
+            {from && !fromOptions.some(([tag]) => tag === from) && (<option value={from}>{from} (0)</option>)}
+            {fromOptions.map(([tag, count]) => (<option key={tag} value={tag}>{tag} ({count})</option>))}
+          </select>
+        </div>
+        <span style={{ fontSize: 16, color: theme.textDim, paddingBottom: 6 }}>→</span>
+        <div>
+          <label style={{ fontSize: 10, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>To tag</label>
+          <input list="reclassify-tags" value={to} onChange={e => setTo(e.target.value)} placeholder="extreme close-up"
+            style={{ width: 210, padding: "7px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 12, fontFamily: "'DM Sans', sans-serif", boxSizing: "border-box" }} />
+          <datalist id="reclassify-tags">
+            {allTags.map(({ tag }) => (<option key={tag} value={tag} />))}
+          </datalist>
+        </div>
+        <button onClick={() => onApply("replace")} disabled={!canReplace}
+          style={btn({ background: canReplace ? `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})` : theme.surfaceAlt, color: canReplace ? "#fff" : theme.textDim }, canReplace)}>
+          {busy ? "Applying…" : "Replace"}
+        </button>
+        <button onClick={() => onApply("add")} disabled={!canAdd}
+          style={btn({ border: `1px solid ${theme.selectedBorder}`, background: "transparent", color: theme.selected }, canAdd)}>+ Add "to" tag</button>
+        <button onClick={() => onApply("remove")} disabled={!canRemove}
+          style={btn({ border: `1px solid ${theme.dangerDim}`, background: "transparent", color: theme.danger }, canRemove)}>− Remove "from" tag</button>
+      </div>
+
+      {status && (
+        <div style={{ marginTop: 10, fontSize: 11, color: status.error ? theme.danger : theme.textMuted, fontFamily: "'Space Mono', monospace" }}>
+          {status.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════
 // Create Dataset dialog — exports the current selection into a LoRA project
 // ═══════════════════════════════════════════
 
@@ -868,6 +981,7 @@ export default function App() {
   const [tagSearchResults, setTagSearchResults] = useState([]);
   const [tagInclude, setTagInclude] = useState([]);
   const [tagExclude, setTagExclude] = useState([]);
+  const [tagAspects, setTagAspects] = useState([]);
   const [tagImages, setTagImages] = useState([]);
   const [tagImagesLoading, setTagImagesLoading] = useState(false);
   const [tagPage, setTagPage] = useState(1);
@@ -875,6 +989,16 @@ export default function App() {
   const [tagTotalPages, setTagTotalPages] = useState(1);
   const [tagSearched, setTagSearched] = useState(false);
   const [tagBulkBusy, setTagBulkBusy] = useState(false);
+
+  // Reclassify mode — a scratch multi-select over the results, independent of
+  // the dataset selection, plus the from/to tags an edit applies.
+  const [retagMode, setRetagMode] = useState(false);
+  const [retagPicked, setRetagPicked] = useState(() => new Set());
+  const [retagAnchor, setRetagAnchor] = useState(null);
+  const [retagFrom, setRetagFrom] = useState("");
+  const [retagTo, setRetagTo] = useState("");
+  const [retagBusy, setRetagBusy] = useState(false);
+  const [retagStatus, setRetagStatus] = useState(null);
   const [datasetModal, setDatasetModal] = useState(null);
   const [taggerStatus, setTaggerStatus] = useState(null);
   const [taggerForm, setTaggerForm] = useState({ model: "qwen3-vl:8b", batch_size: 500 });
@@ -995,21 +1119,24 @@ export default function App() {
   const searchTags = async (query) => { setTagSearch(query); if (!query.trim()) { setTagSearchResults([]); return; } try { const r = await fetch(`${API}/tags/search?q=${encodeURIComponent(query)}&limit=30`); setTagSearchResults(await r.json()); } catch (e) {} };
   // Tag results are browsed the same way as a movie's frames: the full matching
   // set, one page at a time, each tile toggling the shared selection.
+  const hasTagFilters = tagInclude.length > 0 || tagExclude.length > 0 || tagAspects.length > 0;
   const fetchTagImages = useCallback(async (page = 1) => {
-    if (tagInclude.length === 0 && tagExclude.length === 0) return;
+    if (tagInclude.length === 0 && tagExclude.length === 0 && tagAspects.length === 0) return;
     setTagImagesLoading(true);
     try {
       const r = await fetch(`${API}/images/by-tags`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ include_tags: tagInclude, exclude_tags: tagExclude, page, per_page: TAG_PER_PAGE }),
+        body: JSON.stringify({ include_tags: tagInclude, exclude_tags: tagExclude, aspect_groups: tagAspects, page, per_page: TAG_PER_PAGE }),
       });
       if (!r.ok) { let msg = `Error ${r.status}`; try { msg = (await r.json()).detail || msg; } catch {} alert(msg); return; }
       const j = await r.json();
       setTagImages(j.images); setTagTotal(j.total); setTagTotalPages(j.total_pages); setTagPage(j.page);
       setTagSearched(true);
+      // A new page is a new set of frames — nothing carried over stays valid.
+      setRetagPicked(new Set()); setRetagAnchor(null);
     } catch (e) { console.error(e); }
     finally { setTagImagesLoading(false); }
-  }, [tagInclude, tagExclude]);
+  }, [tagInclude, tagExclude, tagAspects]);
 
   const toggleTagImage = async (imageId) => {
     try {
@@ -1040,13 +1167,84 @@ export default function App() {
     if (included && tagTotal > 1000 && !confirm(`Add all ${tagTotal.toLocaleString()} matching images to the selection?`)) return;
     setTagBulkBusy(true);
     try {
-      const r = await fetch(`${API}/selection/by-tags`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ include_tags: tagInclude, exclude_tags: tagExclude, included }) });
+      const r = await fetch(`${API}/selection/by-tags`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ include_tags: tagInclude, exclude_tags: tagExclude, aspect_groups: tagAspects, included }) });
       if (!r.ok) { let msg = `Error ${r.status}`; try { msg = (await r.json()).detail || msg; } catch {} alert(msg); return; }
       await r.json();
       fetchSelectionSummary();
       await fetchTagImages(tagPage);
     } catch (e) { alert("Error: " + e.message); }
     finally { setTagBulkBusy(false); }
+  };
+
+  // ── Reclassify ───────────────────────────
+  //
+  // The pick set is page-local: it holds ids from the page on screen, and a new
+  // search or page resets it, so an edit can never hit a frame you can't see.
+
+  const pickRetagImage = (imageId, index, shiftKey) => {
+    setRetagPicked(prev => {
+      const next = new Set(prev);
+      if (shiftKey && retagAnchor !== null) {
+        const [lo, hi] = retagAnchor <= index ? [retagAnchor, index] : [index, retagAnchor];
+        // A shift-range extends the pick set rather than replacing it, so
+        // several runs of frames can be gathered before applying an edit.
+        for (let i = lo; i <= hi; i++) next.add(tagImages[i].id);
+      } else if (next.has(imageId)) {
+        next.delete(imageId);
+      } else {
+        next.add(imageId);
+      }
+      return next;
+    });
+    if (!shiftKey) setRetagAnchor(index);
+  };
+
+  // "From" can only offer tags actually carried by the frames in scope — the
+  // picked ones, or the whole page when nothing is picked yet.
+  const retagFromOptions = useMemo(() => {
+    const scope = retagPicked.size > 0 ? tagImages.filter(im => retagPicked.has(im.id)) : tagImages;
+    const counts = new Map();
+    for (const img of scope) for (const tag of img.tags || []) counts.set(tag, (counts.get(tag) || 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [tagImages, retagPicked]);
+
+  const applyTagEdit = async (mode) => {
+    const imageIds = [...retagPicked];
+    if (imageIds.length === 0) return;
+    const from = retagFrom.trim().toLowerCase();
+    const to = retagTo.trim().toLowerCase();
+    const add = mode === "remove" ? [] : (to ? [to] : []);
+    const remove = mode === "add" ? [] : (from ? [from] : []);
+    if (add.length === 0 && remove.length === 0) return;
+    if (mode === "remove" && !confirm(`Remove "${from}" from ${imageIds.length} image(s)?`)) return;
+
+    setRetagBusy(true); setRetagStatus(null);
+    try {
+      const r = await fetch(`${API}/tags/edit`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_ids: imageIds, add_tags: add, remove_tags: remove }),
+      });
+      if (!r.ok) {
+        let msg = `Error ${r.status}`; try { msg = (await r.json()).detail || msg; } catch {}
+        setRetagStatus({ error: true, text: msg }); return;
+      }
+      const j = await r.json();
+      // Patch the tiles in place: re-running the search here would yank the
+      // just-edited frames out of the grid before they can be checked.
+      const edited = new Set(imageIds);
+      setTagImages(prev => prev.map(im => {
+        if (!edited.has(im.id)) return im;
+        let tags = (im.tags || []).filter(t => !remove.includes(t));
+        for (const t of add) if (!tags.includes(t)) tags = [...tags, t];
+        return { ...im, tags };
+      }));
+      setRetagPicked(new Set()); setRetagAnchor(null);
+      const what = mode === "replace" ? `${remove[0]} → ${add[0]}`
+        : mode === "add" ? `+${add[0]}` : `−${remove[0]}`;
+      setRetagStatus({ text: `${what} on ${j.images} image(s) — ${j.added} added, ${j.removed} removed. Re-run the search to refilter.` });
+      fetchTopTags();
+    } catch (e) { setRetagStatus({ error: true, text: e.message }); }
+    finally { setRetagBusy(false); }
   };
 
   // Hands the selection to the pipeline: same export the Browse tab performs,
@@ -1356,6 +1554,24 @@ export default function App() {
                       {tagExclude.map(tag => (<button key={tag} onClick={() => toggleTag(tagExclude, setTagExclude, tag)} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 5, background: `${theme.danger}22`, border: `1px solid ${theme.danger}`, color: theme.danger, fontSize: 11, cursor: "pointer" }}>{tag} <span style={{ fontSize: 9, opacity: 0.7 }}>✕</span></button>))}
                     </div>
                   </div>)}
+                  {/* Same aspect-ratio groups Browse & Select filters on, narrowing
+                      tag results to frames from movies shot in those ratios. */}
+                  <div>
+                    <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                      <span>Aspect Ratio {tagAspects.length > 0 && <span style={{ color: theme.accent, marginLeft: 4 }}>({tagAspects.length})</span>}</span>
+                      {tagAspects.length > 0 && (
+                        <button onClick={() => setTagAspects([])} style={{ background: "none", border: "none", color: theme.textDim, fontSize: 10, cursor: "pointer", textTransform: "none", letterSpacing: 0, padding: 0 }}>clear</button>
+                      )}
+                    </label>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 132, overflowY: "auto" }}>
+                      {(filterOptions?.aspect_groups || []).map(group => (
+                        <Badge key={group} active={tagAspects.includes(group)}
+                          onClick={() => setTagAspects(prev => prev.includes(group) ? prev.filter(g => g !== group) : [...prev, group])}>
+                          {group}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
                   <div>
                     <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 6 }}>Top Tags {topTags.length > 0 && <span style={{ color: theme.textMuted, marginLeft: 6 }}>({topTags.length})</span>}</label>
                     {topTags.length === 0 ? (<div style={{ fontSize: 12, color: theme.textDim, padding: "8px 0" }}>No tags yet. Run the tagger first:<div style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, marginTop: 4, color: theme.textMuted }}>python tagger.py --db curator.db --batch 100</div></div>) : (
@@ -1373,24 +1589,54 @@ export default function App() {
                   </div>
                 </div>
                 <div style={{ position: "sticky", bottom: 0, paddingTop: 12, paddingBottom: 4, background: `linear-gradient(transparent, ${theme.surface} 20%)` }}>
-                  <button onClick={() => fetchTagImages(1)} disabled={tagInclude.length === 0 && tagExclude.length === 0}
-                    style={{ width: "100%", padding: "10px 20px", borderRadius: 8, border: "none", background: (tagInclude.length > 0 || tagExclude.length > 0) ? `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})` : theme.surfaceAlt, color: (tagInclude.length > 0 || tagExclude.length > 0) ? "white" : theme.textDim, fontSize: 13, fontWeight: 600, cursor: (tagInclude.length > 0 || tagExclude.length > 0) ? "pointer" : "default", fontFamily: "'DM Sans', sans-serif", letterSpacing: 0.5 }}>Search by Tags</button>
+                  <button onClick={() => fetchTagImages(1)} disabled={!hasTagFilters}
+                    style={{ width: "100%", padding: "10px 20px", borderRadius: 8, border: "none", background: hasTagFilters ? `linear-gradient(135deg, ${theme.accentDim}, ${theme.accent})` : theme.surfaceAlt, color: hasTagFilters ? "white" : theme.textDim, fontSize: 13, fontWeight: 600, cursor: hasTagFilters ? "pointer" : "default", fontFamily: "'DM Sans', sans-serif", letterSpacing: 0.5 }}>Search by Tags</button>
                 </div>
               </Section>
             </div>
             <div>
-              {tagSearched && (<div style={{ marginBottom: 12, fontSize: 12, color: theme.textMuted, fontFamily: "'Space Mono', monospace" }}>
-                <span style={{ color: theme.accent, fontWeight: 700 }}>{tagTotal.toLocaleString()}</span> images
-                {tagTotalPages > 1 && (<><span style={{ color: theme.textDim, margin: "0 6px" }}>·</span>showing {((tagPage - 1) * TAG_PER_PAGE + 1).toLocaleString()}–{Math.min(tagPage * TAG_PER_PAGE, tagTotal).toLocaleString()}</>)}
-                {tagInclude.length > 0 && (<span style={{ color: theme.success, marginLeft: 8 }}>+{tagInclude.join(", +")}</span>)}
-                {tagExclude.length > 0 && (<span style={{ color: theme.danger, marginLeft: 8 }}>−{tagExclude.join(", −")}</span>)}
+              {tagSearched && (<div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 12, color: theme.textMuted, fontFamily: "'Space Mono', monospace" }}>
+                  <span style={{ color: theme.accent, fontWeight: 700 }}>{tagTotal.toLocaleString()}</span> images
+                  {tagTotalPages > 1 && (<><span style={{ color: theme.textDim, margin: "0 6px" }}>·</span>showing {((tagPage - 1) * TAG_PER_PAGE + 1).toLocaleString()}–{Math.min(tagPage * TAG_PER_PAGE, tagTotal).toLocaleString()}</>)}
+                  {tagInclude.length > 0 && (<span style={{ color: theme.success, marginLeft: 8 }}>+{tagInclude.join(", +")}</span>)}
+                  {tagExclude.length > 0 && (<span style={{ color: theme.danger, marginLeft: 8 }}>−{tagExclude.join(", −")}</span>)}
+                  {tagAspects.length > 0 && (<span style={{ color: theme.accent, marginLeft: 8 }}>◫{tagAspects.join(", ")}</span>)}
+                </div>
+                <div style={{ flex: 1 }} />
+                {tagImages.length > 0 && !retagMode && (
+                  <button onClick={() => { setRetagMode(true); setRetagStatus(null); }}
+                    style={footerBtn({ border: `1px solid ${theme.accent}66`, background: "transparent", color: theme.accent })}>
+                    ✎ Reclassify tags
+                  </button>
+                )}
               </div>)}
-              <SelectableImageGrid images={tagImages} loading={tagImagesLoading} onToggle={toggleTagImage} showMeta />
+              {retagMode && tagImages.length > 0 && (
+                <ReclassifyPanel
+                  pickedCount={retagPicked.size}
+                  fromOptions={retagFromOptions}
+                  allTags={topTags}
+                  from={retagFrom} setFrom={setRetagFrom}
+                  to={retagTo} setTo={setRetagTo}
+                  busy={retagBusy}
+                  status={retagStatus}
+                  onSelectPage={() => { setRetagPicked(new Set(tagImages.map(im => im.id))); setRetagAnchor(null); }}
+                  onSelectNone={() => { setRetagPicked(new Set()); setRetagAnchor(null); }}
+                  onInvert={() => { setRetagPicked(prev => new Set(tagImages.filter(im => !prev.has(im.id)).map(im => im.id))); setRetagAnchor(null); }}
+                  onApply={applyTagEdit}
+                  onExit={() => { setRetagMode(false); setRetagPicked(new Set()); setRetagAnchor(null); setRetagStatus(null); }}
+                />
+              )}
+              <SelectableImageGrid
+                images={tagImages} loading={tagImagesLoading} onToggle={toggleTagImage} showMeta
+                pickMode={retagMode} picked={retagPicked} onPick={pickRetagImage} showTags={retagMode}
+                priorityTags={[retagTo.trim().toLowerCase(), retagFrom, ...tagInclude].filter(Boolean)}
+              />
               {tagImages.length === 0 && !tagImagesLoading && (<div style={{ textAlign: "center", padding: 60, color: theme.textDim }}>
                 <div style={{ fontSize: 36, marginBottom: 12, opacity: 0.3 }}>🏷</div>
                 {tagSearched ? (<>
-                  <div style={{ fontSize: 14, marginBottom: 8 }}>No images match these tags</div>
-                  <div style={{ fontSize: 12 }}>Tags match exactly — try a broader one from the list</div>
+                  <div style={{ fontSize: 14, marginBottom: 8 }}>No images match this filter</div>
+                  <div style={{ fontSize: 12 }}>Tags match exactly — try a broader one, or widen the aspect ratios</div>
                 </>) : (<>
                   <div style={{ fontSize: 14, marginBottom: 8 }}>Select tags and click "Search by Tags"</div>
                   <div style={{ fontSize: 12 }}>Click a tag to include it · Shift+click to exclude</div>
