@@ -84,6 +84,7 @@ status = {
     "steps": {
         "export":   {"status": "pending", "detail": ""},
         "tag":      {"status": "pending", "detail": "", "progress": 0, "total": 0},
+        "annotate": {"status": "pending", "detail": ""},
         "cache_vae": {"status": "pending", "detail": ""},
         "cache_te":  {"status": "pending", "detail": ""},
         "train":    {"status": "pending", "detail": ""},
@@ -374,7 +375,9 @@ def create_project_from_path(
 
 def _write_project_toml(project_dir, name, description, trigger_word, tagging_prompt,
                          tagging_model, lr, rank, network_alpha, epochs, save_every, num_repeats,
-                         resolution, enable_samples, sample_prompts, dit_model="qwen_image_bf16.safetensors"):
+                         resolution, enable_samples, sample_prompts, dit_model="qwen_image_bf16.safetensors",
+                         backend="musubi", control_training=False, annotator="openpose",
+                         model_id="Qwen/Qwen-Image"):
     """Generate project.toml with user settings + sensible defaults."""
 
     # Write placeholders, not resolved paths, so backend/.env stays the single
@@ -416,8 +419,18 @@ def _write_project_toml(project_dir, name, description, trigger_word, tagging_pr
     lines.append("'''")
     lines.append("")
 
+    # Control training continues the In-Context-Control-Union LoRA, whose rank
+    # and module set are fixed by that checkpoint. The backend refuses the run
+    # on a mismatch, so write the values it requires rather than the form's.
+    if control_training:
+        rank = 64
+        network_alpha = 64
+
     lines += [
         "[training]",
+        # Always explicit. The package default is "diffsynth", so a project
+        # written without this key would change trainer the moment it is loaded.
+        f'backend = "{backend}"',
         f'learning_rate = "{lr}"',
         f"network_dim = {rank}",
         f"network_alpha = {network_alpha}",
@@ -435,8 +448,41 @@ def _write_project_toml(project_dir, name, description, trigger_word, tagging_pr
         'vae_model = "diffusion_pytorch_model.safetensors"',
         'text_encoder = "qwen_2.5_vl_7b.safetensors"',
         "",
-        "[training.advanced]",
     ]
+
+    if backend == "diffsynth":
+        # One source of truth for the model: the same dropdown that picks the
+        # musubi DIT file picks the DiffSynth repo, so the two cannot disagree.
+        # 2512 ships only a transformer and shares the rest with base
+        # Qwen-Image; the backend knows that split.
+        resolved_model_id = {
+            "qwen_image_2512_bf16.safetensors": "Qwen/Qwen-Image-2512",
+            "qwen_image_bf16.safetensors": "Qwen/Qwen-Image",
+        }.get(dit_model, model_id)
+
+        # Settings proven on crazyAl: 768², both offloads, 3h37m at 90.6% peak
+        # VRAM. enable_optimizer_cpu_offload is what makes rank 64 fit -- it
+        # frees ~3.1 GiB where lowering the resolution frees ~0.15 GiB.
+        lines += [
+            "[training.diffsynth]",
+            f'model_id = "{resolved_model_id}"',
+            "enable_model_cpu_offload = true",
+            "max_pixels = 589824",
+            "dataset_num_workers = 2",
+        ]
+        if control_training:
+            lines += [
+                'control_dir = "./control"',
+                f'annotator = "{annotator}"',
+                'lora_checkpoint = "${COMFYUI_MODELS_ROOT}/DiffSynth-Studio/Qwen-Image-In-Context-Control-Union/model.safetensors"',
+                'lora_target_modules = "default"',
+                "enable_optimizer_cpu_offload = true",
+            ]
+        else:
+            lines += ['lora_target_modules = "musubi_parity"']
+        lines.append("")
+
+    lines += ["[training.advanced]"]
 
     if enable_samples and sample_prompts:
         lines.append("enable_sample_prompts = true")
@@ -635,6 +681,24 @@ def start_cache(project_dir: str, cache_type: str = "both", debug_mode: bool = F
     _stop_flag = False
 
     project_dir = Path(project_dir)
+
+    # DiffSynth encodes inline, so there is usually nothing to cache. Say so and
+    # mark the steps done rather than leaving them pending forever, which would
+    # read as a stalled pipeline.
+    import diffsynth_steps
+    if diffsynth_steps.project_backend(project_dir) == "diffsynth":
+        built = diffsynth_steps.build_steps(project_dir, which="cache")
+        if "error" in built:
+            _set_step("cache_vae", "error", built["error"])
+            return {"error": built["error"]}
+        if not built["steps"]:
+            note = built.get("skipped", "Nothing to cache for this backend.")
+            for s in ("cache_vae", "cache_te"):
+                _set_step(s, "done", "Not needed (encoded inline)")
+            _log(note)
+            return {"started": False, "skipped": note}
+        return _run_backend_steps(project_dir, built, ("cache_vae",))
+
     config = _read_toml(project_dir / "project.toml")
     name = config.get("project", {}).get("name", "project")
 
@@ -724,6 +788,132 @@ def start_cache(project_dir: str, cache_type: str = "both", debug_mode: bool = F
 
 
 # ──────────────────────────────────────────────
+# Running commands built by lora_backends
+# ──────────────────────────────────────────────
+
+def _run_backend_steps(project_dir, built, step_names):
+    """Run Steps produced by lora_backends, streaming output into the log.
+
+    Used for the DiffSynth path. The musubi path still builds its own commands
+    below; consolidating that is a separate change and would alter the commands
+    the UI has been running, so it is deliberately left alone here.
+    """
+    global _current_proc
+
+    import diffsynth_steps
+
+    for note in built.get("notes", []):
+        _log(note)
+    for warn in built.get("warnings", []):
+        # Settings the backend cannot act on. Loud, because silently dropping
+        # them is how a run quietly trains something other than what was asked.
+        _log(f"⚠️  {warn}")
+
+    steps = built["steps"]
+
+    def _worker():
+        global _current_proc
+        for (name, argv, cwd, env_overlay, label) in steps:
+            if _stop_flag:
+                _set_step(name, "error", "Stopped")
+                return
+            argv = diffsynth_steps.resolve_executable(argv)
+            _set_step(name, "running", label or "Running...")
+            _log(f"$ {' '.join(argv)}")
+            env = {**os.environ, **(env_overlay or {})}
+            try:
+                _current_proc = subprocess.Popen(
+                    argv, cwd=cwd, env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                )
+                for line in _current_proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        _log(line)
+                _current_proc.wait()
+                if _current_proc.returncode == 0:
+                    _set_step(name, "done", "Complete")
+                else:
+                    _set_step(name, "error", f"Exit code {_current_proc.returncode}")
+                    return
+            except Exception as e:
+                _set_step(name, "error", str(e))
+                _log(f"{name} error: {e}")
+                return
+            finally:
+                _current_proc = None
+        _flush_vram()
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return {"started": True, "steps": [s[0] for s in steps],
+            "backend": built.get("backend")}
+
+
+# ──────────────────────────────────────────────
+# Step 3b: Generate control images (DiffSynth only)
+# ──────────────────────────────────────────────
+
+def start_annotate(project_dir, annotator=None, overwrite=False):
+    """Run annotate_dataset as a subprocess under the training venv.
+
+    The curator's own interpreter has no torch or controlnet_aux, so this
+    cannot run in-process the way export and tagging do.
+    """
+    global _current_proc, _stop_flag
+    _stop_flag = False
+
+    import diffsynth_steps
+
+    project_dir = Path(project_dir)
+    python = diffsynth_steps.training_python()
+    if not python.exists():
+        msg = f"Training venv python not found: {python}"
+        _set_step("annotate", "error", msg)
+        return {"error": msg}
+
+    cmd = diffsynth_steps.annotate_command(project_dir, annotator, overwrite)
+
+    def _annotate_worker():
+        global _current_proc
+        _set_step("annotate", "running", "Generating control images...")
+        _log(f"Annotating: {' '.join(cmd)}")
+        env = {**os.environ, "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+        try:
+            _current_proc = subprocess.Popen(
+                cmd, cwd=str(project_dir), env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            for line in _current_proc.stdout:
+                line = line.rstrip()
+                if line:
+                    _log(line)
+            _current_proc.wait()
+
+            if _current_proc.returncode == 0:
+                summary = diffsynth_steps.list_control_images(project_dir)
+                detail = f"{len(summary['images']) - summary['missing_count']} control images"
+                if summary["blank_count"]:
+                    # Surfaced rather than buried: these get dropped at training
+                    # time, so the count changes how much data actually trains.
+                    detail += f", {summary['blank_count']} blank"
+                _set_step("annotate", "done", detail)
+                _log(f"Annotation complete: {detail}")
+            else:
+                _set_step("annotate", "error", f"Exit code {_current_proc.returncode}")
+        except Exception as e:
+            _set_step("annotate", "error", str(e))
+            _log(f"annotate error: {e}")
+        finally:
+            _current_proc = None
+            _flush_vram()
+
+    t = threading.Thread(target=_annotate_worker, daemon=True)
+    t.start()
+    return {"started": True}
+
+
+# ──────────────────────────────────────────────
 # Step 4: Train LoRA
 # ──────────────────────────────────────────────
 
@@ -733,6 +923,15 @@ def start_training(project_dir: str):
     _stop_flag = False
 
     project_dir = Path(project_dir)
+
+    import diffsynth_steps
+    if diffsynth_steps.project_backend(project_dir) == "diffsynth":
+        built = diffsynth_steps.build_steps(project_dir, which="train")
+        if "error" in built:
+            _set_step("train", "error", built["error"])
+            return {"error": built["error"]}
+        return _run_backend_steps(project_dir, built, ("train",))
+
     config = _read_toml(project_dir / "project.toml")
     name = config.get("project", {}).get("name", "project")
     training = config.get("training", {})
@@ -970,12 +1169,16 @@ def read_project_config(project_dir) -> dict:
 def update_project_config(project_dir, name, description, trigger_word, tagging_prompt,
                            tagging_model, learning_rate, network_dim, network_alpha,
                            max_epochs, save_every_n_epochs, num_repeats, resolution,
-                           enable_samples, sample_prompts, dit_model):
+                           enable_samples, sample_prompts, dit_model,
+                           backend="musubi", control_training=False,
+                           annotator="openpose", model_id="Qwen/Qwen-Image"):
     """Rewrite project.toml with updated params, preserving structure."""
     _write_project_toml(
         Path(project_dir), name, description, trigger_word, tagging_prompt, tagging_model,
         learning_rate, network_dim, network_alpha, max_epochs, save_every_n_epochs, num_repeats,
         resolution, enable_samples, sample_prompts or [], dit_model=dit_model,
+        backend=backend, control_training=control_training,
+        annotator=annotator, model_id=model_id,
     )
 
 

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 import pipeline
 import defaults
+import diffsynth_steps
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 
@@ -35,6 +36,16 @@ class CreateProjectRequest(BaseModel):
     enable_samples: bool = _d("enable_samples")
     sample_prompts: List[str] = _d("sample_prompts")
     dit_model: str = _d("dit_model")
+    # Trainer selection. Written explicitly into project.toml, because the
+    # package default is "diffsynth" and an absent key would silently switch
+    # trainer for every project the curator creates.
+    backend: str = "musubi"
+    # Continue the In-Context-Control-Union LoRA so control and subject end up
+    # in one adapter instead of two that fight. Forces rank 64 and its module
+    # set, and requires control images from the annotate step.
+    control_training: bool = False
+    annotator: str = "openpose"
+    model_id: str = "Qwen/Qwen-Image"
 
 
 
@@ -238,8 +249,58 @@ async def save_project_config(req: CreateProjectRequest):
         enable_samples=req.enable_samples,
         sample_prompts=req.sample_prompts,
         dit_model=req.dit_model,
+        backend=req.backend,
+        control_training=req.control_training,
+        annotator=req.annotator,
+        model_id=req.model_id,
     )
     return {"ok": True}
+
+
+# ──────────────────────────────────────────────
+# Control images (DiffSynth ControlNet-aware training)
+# ──────────────────────────────────────────────
+
+class AnnotateRequest(BaseModel):
+    annotator: Optional[str] = None
+    overwrite: bool = False
+
+
+@router.post("/annotate")
+async def start_annotate(req: AnnotateRequest):
+    """Generate control images for the loaded project's dataset."""
+    if not pipeline.status["project_dir"]:
+        raise HTTPException(400, "No project loaded")
+    if pipeline.status["running"]:
+        raise HTTPException(400, "Another pipeline step is running")
+    result = pipeline.start_annotate(
+        pipeline.status["project_dir"], req.annotator, req.overwrite
+    )
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@router.get("/control-images")
+async def list_control_images():
+    """Dataset images paired with their control images, for review."""
+    if not pipeline.status["project_dir"]:
+        raise HTTPException(400, "No project loaded")
+    return diffsynth_steps.list_control_images(pipeline.status["project_dir"])
+
+
+@router.get("/backend")
+async def get_backend():
+    """Which trainer the loaded project uses, and whether control is configured."""
+    if not pipeline.status["project_dir"]:
+        raise HTTPException(400, "No project loaded")
+    project_dir = pipeline.status["project_dir"]
+    control_dir = diffsynth_steps.control_dir_for(project_dir)
+    return {
+        "backend": diffsynth_steps.project_backend(project_dir),
+        "control_dir": str(control_dir) if control_dir else None,
+        "control_enabled": control_dir is not None,
+    }
 
 
 @router.get("/projects")

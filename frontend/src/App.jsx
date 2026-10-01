@@ -941,6 +941,12 @@ const FALLBACK_PIPELINE_DEFAULTS = {
   save_every_n_epochs: 2, num_repeats: 1, resolution: 1024,
   enable_samples: false, sample_prompts: [],
   dit_model: "qwen_image_bf16.safetensors",
+  // "musubi" stays the default here even though the lora_backends package now
+  // defaults to diffsynth: the curator writes the key explicitly, so a project
+  // created through the UI keeps the trainer the form actually shows.
+  backend: "musubi",
+  control_training: false,
+  annotator: "openpose",
 };
 
 // The API sends [pipeline]/[presets] with the prompt under `prompt`; the form
@@ -1023,6 +1029,12 @@ export default function App() {
   const [datasetKeep, setDatasetKeep] = useState({});
   const [datasetLoading, setDatasetLoading] = useState(false);
   const [reviewCollapsed, setReviewCollapsed] = useState(false);
+  // Which trainer the loaded project uses, and whether it is set up for
+  // ControlNet-aware training. Drives which pipeline steps are shown.
+  const [backendInfo, setBackendInfo] = useState({ backend: "musubi", control_enabled: false });
+  const [controlImages, setControlImages] = useState(null);
+  const [controlLoading, setControlLoading] = useState(false);
+  const [controlCollapsed, setControlCollapsed] = useState(false);
   const [captionAnalysis, setCaptionAnalysis] = useState(null);
   const [captionAnalysisBusy, setCaptionAnalysisBusy] = useState(false);
   const [captionAnalysisTab, setCaptionAnalysisTab] = useState("unigrams");
@@ -1042,7 +1054,7 @@ export default function App() {
   }, [activeTab, taggerStatus?.process_running]);
   useEffect(() => {
     if (activeTab === "pipeline") {
-      fetchPipelineStatus(); fetchPipelineProjects();
+      fetchPipelineStatus(); fetchPipelineProjects(); fetchBackendInfo(); fetchControlImages();
       pipelineInterval.current = setInterval(fetchPipelineStatus, 2000);
       return () => clearInterval(pipelineInterval.current);
     } else { if (pipelineInterval.current) clearInterval(pipelineInterval.current); }
@@ -1355,12 +1367,32 @@ export default function App() {
   };
   const runPipelineStep = async (step) => {
     const cacheUrl = `/pipeline/cache?cache_type=both${pipelineForm.cache_debug_mode ? "&debug_mode=true" : ""}`;
-    const endpoints = { tag: "/pipeline/tag", cache: cacheUrl, train: "/pipeline/train" };
+    const endpoints = { tag: "/pipeline/tag", cache: cacheUrl, train: "/pipeline/train", annotate: "/pipeline/annotate" };
+    // Annotation takes a body; the others are bare POSTs.
+    const init = step === "annotate"
+      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ overwrite: false }) }
+      : { method: "POST" };
     try {
-      const r = await fetch(`${API}${endpoints[step]}`, { method: "POST" });
+      const r = await fetch(`${API}${endpoints[step]}`, init);
       if (!r.ok) { let msg = "Error"; try { msg = (await r.json()).detail; } catch {} alert(msg); return; }
       fetchPipelineStatus();
+      if (step === "annotate") setTimeout(fetchControlImages, 1500);
     } catch (e) { alert("Error: " + e.message); }
+  };
+
+  const fetchBackendInfo = async () => {
+    try {
+      const r = await fetch(`${API}/pipeline/backend`);
+      if (r.ok) setBackendInfo(await r.json());
+    } catch (e) {}
+  };
+
+  const fetchControlImages = async () => {
+    setControlLoading(true);
+    try {
+      const r = await fetch(`${API}/pipeline/control-images`);
+      if (r.ok) setControlImages(await r.json());
+    } catch (e) {} finally { setControlLoading(false); }
   };
   const stopPipeline = async () => { try { await fetch(`${API}/pipeline/stop`, { method: "POST" }); fetchPipelineStatus(); } catch (e) {} };
 
@@ -1712,6 +1744,43 @@ export default function App() {
                     </select>
                   </div>
                   <div>
+                    <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Trainer</label>
+                    <select value={pipelineForm.backend} onChange={e => setPipelineForm(p => ({ ...p, backend: e.target.value }))}
+                      style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 12, fontFamily: "'Space Mono', monospace", boxSizing: "border-box" }}>
+                      <option value="musubi">musubi — faster, needs conversion for FUK</option>
+                      <option value="diffsynth">DiffSynth — same library FUK generates with</option>
+                    </select>
+                  </div>
+                  {pipelineForm.backend === "diffsynth" && (
+                    <div style={{ gridColumn: "1 / -1", padding: "10px 12px", borderRadius: 8, background: theme.surfaceAlt, border: `1px solid ${theme.border}` }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                        <Checkbox checked={pipelineForm.control_training}
+                          onChange={v => setPipelineForm(p => ({ ...p, control_training: v }))} />
+                        <span style={{ fontSize: 12, color: theme.text, fontWeight: 600 }}>ControlNet-aware training</span>
+                      </label>
+                      <div style={{ fontSize: 11, color: theme.textDim, marginTop: 6, lineHeight: 1.5 }}>
+                        Continues the In-Context-Control-Union LoRA so control and subject end up in a single adapter.
+                        Stacking a separate control LoRA at generation makes the two fight over the same attention
+                        weights — pose gets ignored, or geometry warps while identity survives.
+                        Forces rank 64 to match the checkpoint, and adds a control-image step before training.
+                      </div>
+                      {pipelineForm.control_training && (
+                        <div style={{ marginTop: 10 }}>
+                          <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Control Type</label>
+                          <select value={pipelineForm.annotator} onChange={e => setPipelineForm(p => ({ ...p, annotator: e.target.value }))}
+                            style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: theme.bg, color: theme.text, fontSize: 12, fontFamily: "'Space Mono', monospace", boxSizing: "border-box" }}>
+                            <option value="openpose">openpose — needs a readable body; blanks on back views</option>
+                            <option value="canny">canny — finds edges in almost any image</option>
+                            <option value="depth">depth — finds structure in almost any image</option>
+                            <option value="softedge">softedge</option>
+                            <option value="lineart">lineart</option>
+                            <option value="normal">normal</option>
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div>
                     <label style={{ fontSize: 11, color: theme.textDim, letterSpacing: 1, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Project Name {editMode ? "" : "*"}</label>
                     <input value={pipelineForm.name} onChange={e => !editMode && setPipelineForm(p => ({ ...p, name: e.target.value.replace(/[^a-zA-Z0-9_-]/g, "_") }))}
                       readOnly={editMode} placeholder="noir_style"
@@ -1850,13 +1919,42 @@ export default function App() {
 
                 {/* Pipeline Steps */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-                  {[
-                    { key: "export", label: "1. Export Images", desc: "Copy selected images to project", canRun: false },
-                    { key: "tag", label: "2. Tag Images", desc: "Caption with qwen3-vl:8b via Ollama", canRun: pipelineStatus.steps?.export?.status === "done" },
-                    { key: "cache_vae", label: "3a. Cache VAE", desc: "Pre-compute VAE latents", canRun: pipelineStatus.steps?.tag?.status === "done", runKey: "cache" },
-                    { key: "cache_te", label: "3b. Cache Text Encoder", desc: "Pre-compute text embeddings", canRun: false },
-                    { key: "train", label: "4. Train LoRA", desc: "Run training with musubi-tuner", canRun: pipelineStatus.steps?.cache_te?.status === "done" },
-                  ].map(step => {
+                  {(() => {
+                    const isDS = backendInfo.backend === "diffsynth";
+                    const tagDone = pipelineStatus.steps?.tag?.status === "done";
+                    const base = [
+                      { key: "export", label: "1. Export Images", desc: "Copy selected images to project", canRun: false },
+                      { key: "tag", label: "2. Tag Images", desc: "Caption with qwen3-vl:8b via Ollama", canRun: pipelineStatus.steps?.export?.status === "done" },
+                    ];
+                    if (isDS) {
+                      // DiffSynth encodes inline, so there are no cache steps.
+                      // Control images replace them when control training is on.
+                      if (backendInfo.control_enabled) {
+                        base.push({
+                          key: "annotate", label: "3. Generate Control Images",
+                          desc: "Detect pose/depth/canny from the dataset",
+                          canRun: tagDone,
+                        });
+                      }
+                      base.push({
+                        key: "train",
+                        label: `${backendInfo.control_enabled ? "4" : "3"}. Train LoRA`,
+                        desc: backendInfo.control_enabled
+                          ? "DiffSynth · continues the control LoRA (one adapter, no stacking)"
+                          : "DiffSynth · encodes inline, no caching needed",
+                        canRun: backendInfo.control_enabled
+                          ? pipelineStatus.steps?.annotate?.status === "done"
+                          : tagDone,
+                      });
+                    } else {
+                      base.push(
+                        { key: "cache_vae", label: "3a. Cache VAE", desc: "Pre-compute VAE latents", canRun: tagDone, runKey: "cache" },
+                        { key: "cache_te", label: "3b. Cache Text Encoder", desc: "Pre-compute text embeddings", canRun: false },
+                        { key: "train", label: "4. Train LoRA", desc: "Run training with musubi-tuner", canRun: pipelineStatus.steps?.cache_te?.status === "done" },
+                      );
+                    }
+                    return base;
+                  })().map(step => {
                     const s = pipelineStatus.steps?.[step.key] || {};
                     const isRunning = s.status === "running";
                     const isDone = s.status === "done";
@@ -1964,6 +2062,90 @@ export default function App() {
                                 }}>
                                   {im.filename}
                                   {!im.has_caption && <span style={{ color: theme.warning, marginLeft: 6 }}>· no caption</span>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </Section>
+                  );
+                })()}
+
+                {/* Control Image Review — same grid mechanic as the dataset review.
+                    Only meaningful when the project trains with control images. */}
+                {backendInfo.control_enabled && (() => {
+                  const imgs = controlImages?.images || [];
+                  const blank = controlImages?.blank_count || 0;
+                  const missing = controlImages?.missing_count || 0;
+                  const usable = imgs.length - blank - missing;
+                  return (
+                    <Section
+                      title={`Review Control Images (${imgs.length}${imgs.length ? ` · ${usable} usable` : ""})`}
+                      collapsed={controlCollapsed}
+                      onToggle={() => setControlCollapsed(c => !c)}
+                      actions={
+                        <button onClick={(e) => { e.stopPropagation(); fetchControlImages(); }} disabled={controlLoading}
+                          style={{ padding: "5px 10px", borderRadius: 6, border: `1px solid ${theme.border}`, background: "transparent", color: theme.textMuted, fontSize: 11, cursor: controlLoading ? "wait" : "pointer" }}>
+                          {controlLoading ? "Loading…" : "Refresh"}
+                        </button>
+                      }>
+                      {(blank > 0 || missing > 0) && (
+                        <div style={{ fontSize: 11, color: theme.warning, marginBottom: 10, lineHeight: 1.5 }}>
+                          {missing > 0 && <div>{missing} image(s) have no control map yet — run Generate Control Images.</div>}
+                          {blank > 0 && (
+                            <div>
+                              {blank} control map(s) came out blank (the detector found nothing — usually back views,
+                              tight profiles or crops). These are dropped at training time: a blank control paired with a
+                              finished image teaches the model to ignore control entirely.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {imgs.length === 0 ? (
+                        <div style={{ fontSize: 12, color: theme.textDim, textAlign: "center", padding: 20 }}>
+                          {controlLoading ? "Loading…" : "No dataset images yet."}
+                        </div>
+                      ) : (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8, maxHeight: 520, overflowY: "auto" }}>
+                          {imgs.map(im => {
+                            const bad = im.blank || !im.control_path;
+                            return (
+                              <div key={im.filename} title={`${im.filename}${im.coverage != null ? ` · ${(im.coverage * 100).toFixed(2)}% ink` : ""}`}
+                                style={{
+                                  position: "relative", borderRadius: 8, overflow: "hidden",
+                                  border: `2px solid ${bad ? theme.danger : theme.border}`,
+                                  background: theme.bg,
+                                }}>
+                                {/* Source above, control below, so a mismatch is obvious at a glance */}
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr" }}>
+                                  <img src={`${API}/image/serve-by-path?path=${encodeURIComponent(im.source_path)}`}
+                                    alt={im.filename} loading="lazy"
+                                    style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover", display: "block" }} />
+                                  {im.control_path ? (
+                                    <img src={`${API}/image/serve-by-path?path=${encodeURIComponent(im.control_path)}`}
+                                      alt={`${im.filename} control`} loading="lazy"
+                                      style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover", display: "block", background: "#000" }} />
+                                  ) : (
+                                    <div style={{ width: "100%", aspectRatio: "1/1", background: theme.surfaceAlt,
+                                      display: "flex", alignItems: "center", justifyContent: "center",
+                                      fontSize: 10, color: theme.textDim }}>none</div>
+                                  )}
+                                </div>
+                                {bad && (
+                                  <div style={{ position: "absolute", top: 6, left: 6, padding: "2px 6px", borderRadius: 4,
+                                    background: theme.danger, color: "#fff", fontSize: 9, fontWeight: 700 }}>
+                                    {im.control_path ? "BLANK" : "MISSING"}
+                                  </div>
+                                )}
+                                <div style={{
+                                  position: "absolute", bottom: 0, left: 0, right: 0, padding: "12px 8px 6px",
+                                  background: "linear-gradient(transparent, rgba(0,0,0,0.85))",
+                                  fontSize: 10, color: "#fff", fontFamily: "'Space Mono', monospace",
+                                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                                }}>
+                                  {im.filename}
+                                  {im.coverage != null && <span style={{ color: theme.textMuted, marginLeft: 6 }}>{(im.coverage * 100).toFixed(1)}%</span>}
                                 </div>
                               </div>
                             );
